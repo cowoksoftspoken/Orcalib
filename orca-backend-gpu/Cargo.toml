@@ -1,0 +1,12 @@
+[package]
+name = "orca-backend-gpu"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+orca-core = { path = "../orca-core" }
+orca-tensor = { path = "../orca-tensor" }
+orca-backend-cpu = { path = "../orca-backend-cpu" }
+wgpu = "0.20"
+pollster = "0.3"
+bytemuck = { version = "1.15", features = ["derive"] }

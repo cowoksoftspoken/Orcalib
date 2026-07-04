@@ -1,0 +1,12 @@
+[package]
+name = "orca-backend-cpu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CPU Backend implementation for the Orca framework"
+
+[dependencies]
+orca-core = { path = "../orca-core" }
+orca-tensor = { path = "../orca-tensor" }

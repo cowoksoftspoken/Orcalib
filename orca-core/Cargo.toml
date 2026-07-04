@@ -1,0 +1,11 @@
+[package]
+name = "orca-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core types, traits, and error handling for the Orca framework"
+
+[dependencies]
+thiserror.workspace = true

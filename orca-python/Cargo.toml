@@ -1,0 +1,20 @@
+[package]
+name = "orca-python"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Python bindings for the Orca framework"
+
+[lib]
+name = "orca_python"
+crate-type = ["cdylib"]
+
+[dependencies]
+orca-core = { path = "../orca-core" }
+orca-tensor = { path = "../orca-tensor" }
+orca-backend-cpu = { path = "../orca-backend-cpu" }
+orca-backend-gpu = { path = "../orca-backend-gpu" }
+orca-autograd = { path = "../orca-autograd" }
+pyo3.workspace = true

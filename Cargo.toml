@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "orca-core",
+    "orca-tensor",
+    "orca-backend-cpu",
+    "orca-autograd",
+    "orca-python", "orca-backend-gpu",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+authors = ["Orca Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/orca-framework/orca"
+description = "A progressive deep learning framework."
+
+[workspace.dependencies]
+# Error handling
+thiserror = "1.0"
+
+# Python Bindings
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1 # Slight optimization for dev to speed up tensor ops a bit

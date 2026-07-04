@@ -1,0 +1,13 @@
+[package]
+name = "orca-tensor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tensor representation and Backend traits for the Orca framework"
+
+[dependencies]
+orca-core = { path = "../orca-core" }
+bytemuck = "1.15.0"
+rand = "0.8"

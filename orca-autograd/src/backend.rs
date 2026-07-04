@@ -1,0 +1,898 @@
+use std::sync::{Arc, Mutex};
+use std::marker::PhantomData;
+use std::fmt::Debug;
+use orca_core::{Device, DType, Shape, Result};
+use orca_tensor::{Backend, Storage};
+use crate::tape::{Tape, NodeId, BackwardOp, Gradients};
+
+/// Storage wrapper that holds the primal data and its tape NodeId.
+#[derive(Clone, Debug)]
+pub struct AutodiffStorage<S: Storage> {
+    pub primal: S,
+    pub node_id: Option<NodeId>,
+}
+
+impl<S: Storage> Storage for AutodiffStorage<S> {
+    fn len(&self) -> usize {
+        self.primal.len()
+    }
+}
+
+/// The Autodiff Backend wrapper.
+#[derive(Clone, Debug)]
+pub struct Autodiff<B: Backend> {
+    inner: B,
+    tape: Arc<Mutex<Tape<B>>>,
+    _phantom: PhantomData<B>,
+}
+
+impl<B: Backend> Autodiff<B> {
+    pub fn new(inner: B) -> Self {
+        Self {
+            inner,
+            tape: Arc::new(Mutex::new(Tape::new())),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn inner(&self) -> &B {
+        &self.inner
+    }
+
+    pub fn tape(&self) -> Arc<Mutex<Tape<B>>> {
+        Arc::clone(&self.tape)
+    }
+}
+
+impl<B: Backend> Backend for Autodiff<B> {
+    type Storage = AutodiffStorage<B::Storage>;
+
+    fn device(&self) -> Device {
+        self.inner.device()
+    }
+
+    fn zeros(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.zeros(shape, dtype)?;
+        Ok(AutodiffStorage {
+            primal,
+            node_id: None,
+        })
+    }
+
+    fn from_f32_slice(&self, shape: &Shape, data: &[f32]) -> Result<Self::Storage> {
+        let primal = self.inner.from_f32_slice(shape, data)?;
+        Ok(AutodiffStorage {
+            primal,
+            node_id: None, // Will be set by python wrapper if requires_grad=True
+        })
+    }
+
+    fn to_f32_vec(&self, storage: &Self::Storage) -> Result<Vec<f32>> {
+        self.inner.to_f32_vec(&storage.primal)
+    }
+
+    fn add(&self, lhs: &Self::Storage, rhs: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.add(&lhs.primal, &rhs.primal, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        // If either input has a node_id, it means they require grad, so this operation requires grad.
+        if lhs.node_id.is_some() || rhs.node_id.is_some() {
+            let lhs_id = lhs.node_id;
+            let rhs_id = rhs.node_id;
+            let _out_shape = shape.clone();
+            
+            tape.push_node(Box::new(AddBackward {
+                out_id,
+                lhs_id,
+                rhs_id,
+            }));
+
+            Ok(AutodiffStorage {
+                primal,
+                node_id: Some(out_id),
+            })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn matmul(&self, lhs: &Self::Storage, rhs: &Self::Storage, lhs_shape: &Shape, rhs_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.matmul(&lhs.primal, &rhs.primal, lhs_shape, rhs_shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if lhs.node_id.is_some() || rhs.node_id.is_some() {
+            tape.push_node(Box::new(MatMulBackward {
+                out_id,
+                lhs_id: lhs.node_id,
+                rhs_id: rhs.node_id,
+                lhs_primal: lhs.primal.clone(),
+                rhs_primal: rhs.primal.clone(),
+                lhs_shape: lhs_shape.clone(),
+                rhs_shape: rhs_shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn transpose(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.transpose(&storage.primal, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if let Some(in_id) = storage.node_id {
+            tape.push_node(Box::new(TransposeBackward {
+                out_id,
+                in_id,
+                shape: shape.clone(),
+                dtype,
+                _phantom: PhantomData,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn sub(&self, lhs: &Self::Storage, rhs: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.sub(&lhs.primal, &rhs.primal, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if lhs.node_id.is_some() || rhs.node_id.is_some() {
+            tape.push_node(Box::new(SubBackward {
+                out_id,
+                lhs_id: lhs.node_id,
+                rhs_id: rhs.node_id,
+                shape: shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn mul_scalar(&self, storage: &Self::Storage, scalar: f32, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.mul_scalar(&storage.primal, scalar, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if let Some(in_id) = storage.node_id {
+            tape.push_node(Box::new(MulScalarBackward {
+                out_id,
+                in_id,
+                scalar,
+                shape: shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn mul(&self, lhs: &Self::Storage, rhs: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.mul(&lhs.primal, &rhs.primal, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if lhs.node_id.is_some() || rhs.node_id.is_some() {
+            tape.push_node(Box::new(MulBackward {
+                out_id,
+                lhs_id: lhs.node_id,
+                rhs_id: rhs.node_id,
+                lhs_primal: lhs.primal.clone(),
+                rhs_primal: rhs.primal.clone(),
+                shape: shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn div(&self, lhs: &Self::Storage, rhs: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.div(&lhs.primal, &rhs.primal, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if lhs.node_id.is_some() || rhs.node_id.is_some() {
+            tape.push_node(Box::new(DivBackward {
+                out_id,
+                lhs_id: lhs.node_id,
+                rhs_id: rhs.node_id,
+                lhs_primal: lhs.primal.clone(),
+                rhs_primal: rhs.primal.clone(),
+                shape: shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn relu(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.relu(&storage.primal, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if let Some(in_id) = storage.node_id {
+            tape.push_node(Box::new(ReluBackward {
+                out_id,
+                in_id,
+                in_primal: storage.primal.clone(),
+                shape: shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn sqrt(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.sqrt(&storage.primal, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if let Some(in_id) = storage.node_id {
+            tape.push_node(Box::new(SqrtBackwardOp {
+                out_id,
+                in_id,
+                out_primal: primal.clone(),
+                shape: shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn sigmoid(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.sigmoid(&storage.primal, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if let Some(in_id) = storage.node_id {
+            // Optimization: capture the output primal (y) instead of input (x).
+            // y is exactly `primal`.
+            tape.push_node(Box::new(SigmoidBackward {
+                out_id,
+                in_id,
+                out_primal: primal.clone(),
+                shape: shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn relu_backward(&self, grad_out: &Self::Storage, in_primal: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.relu_backward(&grad_out.primal, &in_primal.primal, shape, dtype)?;
+        Ok(AutodiffStorage { primal, node_id: None }) // Higher order gradients not supported yet
+    }
+
+    fn sigmoid_backward(&self, grad_out: &Self::Storage, out_primal: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.sigmoid_backward(&grad_out.primal, &out_primal.primal, shape, dtype)?;
+        Ok(AutodiffStorage { primal, node_id: None }) // Higher order gradients not supported yet
+    }
+
+    fn expand(&self, storage: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.expand(&storage.primal, in_shape, out_shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if let Some(in_id) = storage.node_id {
+            tape.push_node(Box::new(ExpandBackward {
+                out_id,
+                in_id,
+                in_shape: in_shape.clone(),
+                out_shape: out_shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn sum_to_shape(&self, storage: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.sum_to_shape(&storage.primal, in_shape, out_shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if let Some(in_id) = storage.node_id {
+            tape.push_node(Box::new(SumToShapeBackward {
+                out_id,
+                in_id,
+                in_shape: in_shape.clone(),
+                out_shape: out_shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn reshape(&self, storage: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.reshape(&storage.primal, in_shape, out_shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if let Some(in_id) = storage.node_id {
+            tape.push_node(Box::new(ReshapeBackward {
+                out_id,
+                in_id,
+                in_shape: in_shape.clone(),
+                out_shape: out_shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn exp(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.exp(&storage.primal, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if let Some(in_id) = storage.node_id {
+            tape.push_node(Box::new(ExpBackwardOp {
+                out_id,
+                in_id,
+                out_primal: primal.clone(),
+                shape: shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn log(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.log(&storage.primal, shape, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if let Some(in_id) = storage.node_id {
+            tape.push_node(Box::new(LogBackwardOp {
+                out_id,
+                in_id,
+                in_primal: storage.primal.clone(),
+                shape: shape.clone(),
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn exp_backward(&self, grad_out: &Self::Storage, out_primal: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.exp_backward(&grad_out.primal, &out_primal.primal, shape, dtype)?;
+        Ok(AutodiffStorage { primal, node_id: None })
+    }
+
+    fn log_backward(&self, grad_out: &Self::Storage, in_primal: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let inner_grad = self.inner.log_backward(&grad_out.primal, &in_primal.primal, shape, dtype)?;
+        Ok(AutodiffStorage { primal: inner_grad, node_id: None })
+    }
+
+    fn div_backward_lhs(&self, grad_out: &Self::Storage, rhs_primal: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.div_backward_lhs(&grad_out.primal, &rhs_primal.primal, shape, dtype)?;
+        Ok(AutodiffStorage { primal, node_id: None })
+    }
+
+    fn div_backward_rhs(&self, grad_out: &Self::Storage, lhs_primal: &Self::Storage, rhs_primal: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.div_backward_rhs(&grad_out.primal, &lhs_primal.primal, &rhs_primal.primal, shape, dtype)?;
+        Ok(AutodiffStorage { primal, node_id: None })
+    }
+
+    fn sqrt_backward(&self, grad_out: &Self::Storage, out_primal: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.sqrt_backward(&grad_out.primal, &out_primal.primal, shape, dtype)?;
+        Ok(AutodiffStorage { primal, node_id: None })
+    }
+
+    fn accumulate_grad(&self, lhs: &Self::Storage, rhs: &Self::Storage) -> Result<Self::Storage> {
+        let primal = self.inner.accumulate_grad(&lhs.primal, &rhs.primal)?;
+        Ok(AutodiffStorage { primal, node_id: None })
+    }
+
+    fn conv2d(&self, input: &Self::Storage, weight: &Self::Storage, bias: Option<&Self::Storage>,
+              in_shape: &Shape, weight_shape: &Shape,
+              padding: usize, stride: usize, dilation: usize, groups: usize, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.conv2d(&input.primal, &weight.primal, bias.map(|b| &b.primal), in_shape, weight_shape, padding, stride, dilation, groups, dtype)?;
+        
+        let mut tape = self.tape.lock().unwrap();
+        let out_id = tape.generate_id();
+
+        if input.node_id.is_some() || weight.node_id.is_some() || bias.map(|b| b.node_id.is_some()).unwrap_or(false) {
+            tape.push_node(Box::new(Conv2dBackward {
+                out_id,
+                in_id: input.node_id,
+                weight_id: weight.node_id,
+                bias_id: bias.and_then(|b| b.node_id),
+                in_primal: input.primal.clone(),
+                weight_primal: weight.primal.clone(),
+                in_shape: in_shape.clone(),
+                weight_shape: weight_shape.clone(),
+                padding,
+                stride,
+                dilation,
+                groups,
+                dtype,
+            }));
+            Ok(AutodiffStorage { primal, node_id: Some(out_id) })
+        } else {
+            Ok(AutodiffStorage { primal, node_id: None })
+        }
+    }
+
+    fn conv2d_backward_input(&self, grad_out: &Self::Storage, weight: &Self::Storage,
+                             in_shape: &Shape, weight_shape: &Shape,
+                             padding: usize, stride: usize, dilation: usize, groups: usize, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.conv2d_backward_input(&grad_out.primal, &weight.primal, in_shape, weight_shape, padding, stride, dilation, groups, dtype)?;
+        Ok(AutodiffStorage { primal, node_id: None })
+    }
+
+    fn conv2d_backward_weight(&self, grad_out: &Self::Storage, input: &Self::Storage,
+                              in_shape: &Shape, weight_shape: &Shape,
+                              padding: usize, stride: usize, dilation: usize, groups: usize, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.conv2d_backward_weight(&grad_out.primal, &input.primal, in_shape, weight_shape, padding, stride, dilation, groups, dtype)?;
+        Ok(AutodiffStorage { primal, node_id: None })
+    }
+
+    fn conv2d_backward_bias(&self, grad_out: &Self::Storage, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let primal = self.inner.conv2d_backward_bias(&grad_out.primal, out_shape, dtype)?;
+        Ok(AutodiffStorage { primal, node_id: None })
+    }
+}
+
+/// Backward operation for Addition
+#[derive(Debug)]
+struct AddBackward {
+    out_id: NodeId,
+    lhs_id: Option<NodeId>,
+    rhs_id: Option<NodeId>,
+}
+
+impl<B: Backend> BackwardOp<B> for AddBackward {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        if let Some(out_grad) = grads.get(self.out_id) {
+            let out_grad_cloned = out_grad.clone();
+            let out_grad_cloned_2 = out_grad.clone();
+
+            if let Some(lhs) = self.lhs_id {
+                grads.accumulate(lhs, out_grad_cloned, backend);
+            }
+            if let Some(rhs) = self.rhs_id {
+                grads.accumulate(rhs, out_grad_cloned_2, backend);
+            }
+        }
+    }
+}
+
+/// Backward operation for MatMul
+#[derive(Debug)]
+struct MatMulBackward<B: Backend> {
+    out_id: NodeId,
+    lhs_id: Option<NodeId>,
+    rhs_id: Option<NodeId>,
+    lhs_primal: B::Storage,
+    rhs_primal: B::Storage,
+    lhs_shape: Shape,
+    rhs_shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for MatMulBackward<B> {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) {
+            g.clone()
+        } else {
+            return;
+        };
+
+        let out_shape = Shape::new(vec![self.lhs_shape[0], self.rhs_shape[1]]);
+        
+        if let Some(lhs) = self.lhs_id {
+            // grad_x = grad_z @ y^T
+            let rhs_t = backend.transpose(&self.rhs_primal, &self.rhs_shape, self.dtype).unwrap();
+            let rhs_t_shape = Shape::new(vec![self.rhs_shape[1], self.rhs_shape[0]]);
+            let grad_lhs = backend.matmul(&out_grad, &rhs_t, &out_shape, &rhs_t_shape, self.dtype).unwrap();
+            grads.accumulate(lhs, grad_lhs, backend);
+        }
+        if let Some(rhs) = self.rhs_id {
+            // grad_y = x^T @ grad_z
+            let lhs_t = backend.transpose(&self.lhs_primal, &self.lhs_shape, self.dtype).unwrap();
+            let lhs_t_shape = Shape::new(vec![self.lhs_shape[1], self.lhs_shape[0]]);
+            let grad_rhs = backend.matmul(&lhs_t, &out_grad, &lhs_t_shape, &out_shape, self.dtype).unwrap();
+            grads.accumulate(rhs, grad_rhs, backend);
+        }
+    }
+}
+
+/// Backward operation for Transpose
+#[derive(Debug)]
+struct TransposeBackward<B: Backend> {
+    out_id: NodeId,
+    in_id: NodeId,
+    shape: Shape,
+    dtype: DType,
+    _phantom: PhantomData<B>,
+}
+
+impl<B: Backend> BackwardOp<B> for TransposeBackward<B> {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) {
+            g.clone()
+        } else {
+            return;
+        };
+
+        // grad_in = (grad_out)^T
+        let out_shape = Shape::new(vec![self.shape[1], self.shape[0]]);
+        let grad_in = backend.transpose(&out_grad, &out_shape, self.dtype).unwrap();
+        grads.accumulate(self.in_id, grad_in, backend);
+    }
+}
+
+/// Backward operation for Subtraction
+#[derive(Debug)]
+struct SubBackward {
+    out_id: NodeId,
+    lhs_id: Option<NodeId>,
+    rhs_id: Option<NodeId>,
+    shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for SubBackward {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) {
+            g.clone()
+        } else {
+            return;
+        };
+
+        if let Some(lhs) = self.lhs_id {
+            // grad_x = grad_z
+            grads.accumulate(lhs, out_grad.clone(), backend);
+        }
+        if let Some(rhs) = self.rhs_id {
+            // grad_y = -grad_z
+            // Implement -grad_z as mul_scalar(-1.0)
+            let grad_rhs = backend.mul_scalar(&out_grad, -1.0, &self.shape, self.dtype).unwrap();
+            grads.accumulate(rhs, grad_rhs, backend);
+        }
+    }
+}
+
+/// Backward operation for Scalar Multiplication
+#[derive(Debug)]
+struct MulScalarBackward {
+    out_id: NodeId,
+    in_id: NodeId,
+    scalar: f32,
+    shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for MulScalarBackward {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) {
+            g.clone()
+        } else {
+            return;
+        };
+
+        // grad_in = grad_out * scalar
+        let grad_in = backend.mul_scalar(&out_grad, self.scalar, &self.shape, self.dtype).unwrap();
+        grads.accumulate(self.in_id, grad_in, backend);
+    }
+}
+
+/// Backward operation for Element-wise Multiplication
+#[derive(Debug)]
+struct MulBackward<B: Backend> {
+    out_id: NodeId,
+    lhs_id: Option<NodeId>,
+    rhs_id: Option<NodeId>,
+    lhs_primal: B::Storage,
+    rhs_primal: B::Storage,
+    shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for MulBackward<B> {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) {
+            g.clone()
+        } else {
+            return;
+        };
+
+        if let Some(lhs) = self.lhs_id {
+            // grad_x = grad_z * y
+            let grad_lhs = backend.mul(&out_grad, &self.rhs_primal, &self.shape, self.dtype).unwrap();
+            grads.accumulate(lhs, grad_lhs, backend);
+        }
+        if let Some(rhs) = self.rhs_id {
+            // grad_y = grad_z * x
+            let grad_rhs = backend.mul(&out_grad, &self.lhs_primal, &self.shape, self.dtype).unwrap();
+            grads.accumulate(rhs, grad_rhs, backend);
+        }
+    }
+}
+
+/// Backward operation for ReLU
+#[derive(Debug)]
+struct ReluBackward<B: Backend> {
+    out_id: NodeId,
+    in_id: NodeId,
+    in_primal: B::Storage,
+    shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for ReluBackward<B> {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) {
+            g.clone()
+        } else {
+            return;
+        };
+
+        // grad_in = grad_out * (in_primal > 0)
+        let grad_in = backend.relu_backward(&out_grad, &self.in_primal, &self.shape, self.dtype).unwrap();
+        grads.accumulate(self.in_id, grad_in, backend);
+    }
+}
+
+/// Backward operation for Sigmoid
+#[derive(Debug)]
+struct SigmoidBackward<B: Backend> {
+    out_id: NodeId,
+    in_id: NodeId,
+    out_primal: B::Storage,
+    shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for SigmoidBackward<B> {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) {
+            g.clone()
+        } else {
+            return;
+        };
+
+        // grad_in = grad_out * y * (1 - y)
+        let grad_in = backend.sigmoid_backward(&out_grad, &self.out_primal, &self.shape, self.dtype).unwrap();
+        grads.accumulate(self.in_id, grad_in, backend);
+    }
+}
+
+/// Backward operation for Expand (Broadcast)
+#[derive(Debug)]
+struct ExpandBackward {
+    out_id: NodeId,
+    in_id: NodeId,
+    in_shape: Shape,
+    out_shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for ExpandBackward {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) {
+            g.clone()
+        } else {
+            return;
+        };
+
+        // grad_in = sum_to_shape(grad_out, in_shape)
+        let grad_in = backend.sum_to_shape(&out_grad, &self.out_shape, &self.in_shape, self.dtype).unwrap();
+        grads.accumulate(self.in_id, grad_in, backend);
+    }
+}
+
+/// Backward operation for SumToShape
+#[derive(Debug)]
+struct SumToShapeBackward {
+    out_id: NodeId,
+    in_id: NodeId,
+    in_shape: Shape,
+    out_shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for SumToShapeBackward {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) {
+            g.clone()
+        } else {
+            return;
+        };
+
+        // grad_in = expand(grad_out, in_shape)
+        let grad_in = backend.expand(&out_grad, &self.out_shape, &self.in_shape, self.dtype).unwrap();
+        grads.accumulate(self.in_id, grad_in, backend);
+    }
+}
+
+/// Backward operation for Reshape
+#[derive(Debug)]
+struct ReshapeBackward {
+    out_id: NodeId,
+    in_id: NodeId,
+    in_shape: Shape,
+    out_shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for ReshapeBackward {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return; };
+        // grad_in = reshape(grad_out, in_shape)
+        let grad_in = backend.reshape(&out_grad, &self.out_shape, &self.in_shape, self.dtype).unwrap();
+        grads.accumulate(self.in_id, grad_in, backend);
+    }
+}
+
+/// Backward operation for Exp
+#[derive(Debug)]
+struct ExpBackwardOp<B: Backend> {
+    out_id: NodeId,
+    in_id: NodeId,
+    out_primal: B::Storage,
+    shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for ExpBackwardOp<B> {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return; };
+        let grad_in = backend.exp_backward(&out_grad, &self.out_primal, &self.shape, self.dtype).unwrap();
+        grads.accumulate(self.in_id, grad_in, backend);
+    }
+}
+
+/// Backward operation for Log
+#[derive(Debug)]
+struct LogBackwardOp<B: Backend> {
+    out_id: NodeId,
+    in_id: NodeId,
+    in_primal: B::Storage,
+    shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for LogBackwardOp<B> {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return; };
+        let grad_in = backend.log_backward(&out_grad, &self.in_primal, &self.shape, self.dtype).unwrap();
+        grads.accumulate(self.in_id, grad_in, backend);
+    }
+}
+
+/// Backward operation for Element-wise Division
+#[derive(Debug)]
+struct DivBackward<B: Backend> {
+    out_id: NodeId,
+    lhs_id: Option<NodeId>,
+    rhs_id: Option<NodeId>,
+    lhs_primal: B::Storage,
+    rhs_primal: B::Storage,
+    shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for DivBackward<B> {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) {
+            g.clone()
+        } else {
+            return;
+        };
+
+        if let Some(lhs) = self.lhs_id {
+            // grad_x = grad_z / y
+            let grad_lhs = backend.div_backward_lhs(&out_grad, &self.rhs_primal, &self.shape, self.dtype).unwrap();
+            grads.accumulate(lhs, grad_lhs, backend);
+        }
+        if let Some(rhs) = self.rhs_id {
+            // grad_y = grad_z * (-x / y^2)
+            let grad_rhs = backend.div_backward_rhs(&out_grad, &self.lhs_primal, &self.rhs_primal, &self.shape, self.dtype).unwrap();
+            grads.accumulate(rhs, grad_rhs, backend);
+        }
+    }
+}
+
+/// Backward operation for Sqrt
+#[derive(Debug)]
+struct SqrtBackwardOp<B: Backend> {
+    out_id: NodeId,
+    in_id: NodeId,
+    out_primal: B::Storage,
+    shape: Shape,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for SqrtBackwardOp<B> {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return; };
+        let grad_in = backend.sqrt_backward(&out_grad, &self.out_primal, &self.shape, self.dtype).unwrap();
+        grads.accumulate(self.in_id, grad_in, backend);
+    }
+}
+
+/// Backward operation for Conv2d
+#[derive(Debug)]
+struct Conv2dBackward<B: Backend> {
+    out_id: NodeId,
+    in_id: Option<NodeId>,
+    weight_id: Option<NodeId>,
+    bias_id: Option<NodeId>,
+    in_primal: B::Storage,
+    weight_primal: B::Storage,
+    in_shape: Shape,
+    weight_shape: Shape,
+    padding: usize,
+    stride: usize,
+    dilation: usize,
+    groups: usize,
+    dtype: DType,
+}
+
+impl<B: Backend> BackwardOp<B> for Conv2dBackward<B> {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return; };
+        
+        let out_h = (self.in_shape[2] + 2 * self.padding - self.dilation * (self.weight_shape[2] - 1) - 1) / self.stride + 1;
+        let out_w = (self.in_shape[3] + 2 * self.padding - self.dilation * (self.weight_shape[3] - 1) - 1) / self.stride + 1;
+        let out_shape = Shape::new(vec![self.in_shape[0], self.weight_shape[0], out_h, out_w]);
+
+        if let Some(in_id) = self.in_id {
+            let grad_in = backend.conv2d_backward_input(&out_grad, &self.weight_primal, &self.in_shape, &self.weight_shape, self.padding, self.stride, self.dilation, self.groups, self.dtype).unwrap();
+            grads.accumulate(in_id, grad_in, backend);
+        }
+        if let Some(w_id) = self.weight_id {
+            let grad_w = backend.conv2d_backward_weight(&out_grad, &self.in_primal, &self.in_shape, &self.weight_shape, self.padding, self.stride, self.dilation, self.groups, self.dtype).unwrap();
+            grads.accumulate(w_id, grad_w, backend);
+        }
+        if let Some(b_id) = self.bias_id {
+            let grad_b = backend.conv2d_backward_bias(&out_grad, &out_shape, self.dtype).unwrap();
+            grads.accumulate(b_id, grad_b, backend);
+        }
+    }
+}
