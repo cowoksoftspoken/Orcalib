@@ -15,6 +15,9 @@ pub trait AutogradTensorExt<B: Backend> {
 
     /// Clears the computational graph and all accumulated gradients.
     fn zero_grad(&self) -> Result<()>;
+    
+    /// Retrieves the underlying inner primal tensor without the autodiff wrapper.
+    fn primal(&self) -> Tensor<B>;
 }
 
 impl<B: Backend> AutogradTensorExt<B> for Tensor<Autodiff<B>> {
@@ -72,5 +75,15 @@ impl<B: Backend> AutogradTensorExt<B> for Tensor<Autodiff<B>> {
         tape.clear();
         
         Ok(())
+    }
+
+    fn primal(&self) -> Tensor<B> {
+        Tensor::from_raw_parts(
+            self.backend().inner().clone(),
+            self.storage().primal.clone(),
+            self.shape().clone(),
+            self.strides().to_vec(),
+            self.dtype(),
+        )
     }
 }

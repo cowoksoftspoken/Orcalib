@@ -11,3 +11,4 @@ description = "Tensor representation and Backend traits for the Orca framework"
 orca-core = { path = "../orca-core" }
 bytemuck = "1.15.0"
 rand = "0.8"
+rand_distr = "0.4"

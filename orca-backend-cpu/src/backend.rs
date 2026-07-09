@@ -1,4 +1,8 @@
 #![allow(clippy::needless_range_loop)]
+use std::fmt::Debug;
+use rayon::prelude::*;
+use matrixmultiply::sgemm;
+
 use orca_core::{Device, DType, Shape, Result, OrcaError};
 use orca_tensor::{Backend, Storage};
 use crate::storage::CpuByteStorage;
@@ -97,55 +101,107 @@ impl Backend for CpuBackend {
         dispatch_dtype!(dtype, T, {
             let lhs_slice = lhs.as_slice::<T>();
             let rhs_slice = rhs.as_slice::<T>();
-            let mut result = Vec::with_capacity(lhs_slice.len());
-            for i in 0..lhs_slice.len() {
-                result.push(lhs_slice[i].add(rhs_slice[i]));
-            }
+            let result: Vec<T> = lhs_slice.par_iter().zip(rhs_slice.par_iter())
+                .map(|(a, b)| a.add(*b))
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
 
     fn matmul(&self, lhs: &Self::Storage, rhs: &Self::Storage, lhs_shape: &Shape, rhs_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
-        dispatch_dtype!(dtype, T, {
-            let m = lhs_shape[0];
-            let k = lhs_shape[1];
-            let n = rhs_shape[1];
-            
-            let lhs_slice = lhs.as_slice::<T>();
-            let rhs_slice = rhs.as_slice::<T>();
-            
-            let mut result = vec![T::zero(); m * n];
-            
-            for i in 0..m {
-                for j in 0..n {
-                    let mut sum = T::zero();
-                    for p in 0..k {
-                        sum = sum.add(lhs_slice[i * k + p].mul(rhs_slice[p * n + j]));
-                    }
-                    result[i * n + j] = sum;
-                }
+        if dtype != DType::F32 {
+            return Err(OrcaError::UnsupportedDType { op: "matmul (cpu)", dtype });
+        }
+        
+        // Ensure shapes are compatible for batched matmul
+        let rank = lhs_shape.rank();
+        if rank < 2 || rhs_shape.rank() < 2 {
+            return Err(OrcaError::InternalError("Matmul requires at least 2D shapes".into()));
+        }
+        
+        // Calculate batch size
+        let mut batch_size = 1;
+        for i in 0..rank - 2 {
+            if lhs_shape[i] != rhs_shape[i] {
+                return Err(OrcaError::InternalError("Matmul batch dimensions must match".into()));
             }
+            batch_size *= lhs_shape[i];
+        }
+        
+        let m = lhs_shape[rank - 2];
+        let k = lhs_shape[rank - 1];
+        let n = rhs_shape[rank - 1]; // assuming rhs is also (..., K, N)
+        
+        let lhs_f32 = unsafe { std::slice::from_raw_parts(lhs.as_bytes().as_ptr() as *const f32, lhs.len()) };
+        let rhs_f32 = unsafe { std::slice::from_raw_parts(rhs.as_bytes().as_ptr() as *const f32, rhs.len()) };
+        
+        let mut result = vec![0.0f32; batch_size * m * n];
+        
+        for b in 0..batch_size {
+            let lhs_offset = b * m * k;
+            let rhs_offset = b * k * n;
+            let res_offset = b * m * n;
             
-            let out_shape = Shape::new(vec![m, n]);
-            self.from_slice::<T>(&out_shape, &result, dtype)
-        })
+            unsafe {
+                sgemm(
+                    m, k, n,
+                    1.0,
+                    lhs_f32.as_ptr().add(lhs_offset), k as isize, 1,
+                    rhs_f32.as_ptr().add(rhs_offset), n as isize, 1,
+                    0.0,
+                    result.as_mut_ptr().add(res_offset), n as isize, 1,
+                );
+            }
+        }
+        
+        let mut out_shape_vec = lhs_shape.to_vec();
+        out_shape_vec[rank - 2] = m;
+        out_shape_vec[rank - 1] = n;
+        let out_shape = Shape::new(out_shape_vec);
+        self.from_f32_slice(&out_shape, &result)
     }
 
-    fn transpose(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+    fn transpose(&self, storage: &Self::Storage, shape: &Shape, dim0: usize, dim1: usize, dtype: DType) -> Result<Self::Storage> {
+        if dim0 >= shape.rank() || dim1 >= shape.rank() {
+            return Err(OrcaError::InternalError("Invalid transpose dimensions".into()));
+        }
+        
         dispatch_dtype!(dtype, T, {
-            let rows = shape[0];
-            let cols = shape[1];
-            
             let in_slice = storage.as_slice::<T>();
-            let mut out_slice = vec![T::zero(); rows * cols];
+            let mut out_slice = vec![T::zero(); storage.len()];
             
-            for i in 0..rows {
-                for j in 0..cols {
-                    out_slice[j * rows + i] = in_slice[i * cols + j];
-                }
+            let mut out_shape_vec = shape.to_vec();
+            out_shape_vec.swap(dim0, dim1);
+            
+            // Compute strides for out mapping to in
+            let mut in_strides = vec![1; shape.rank()];
+            for i in (0..shape.rank() - 1).rev() {
+                in_strides[i] = in_strides[i+1] * shape[i+1];
             }
             
-            let out_shape = Shape::new(vec![cols, rows]);
+            let mut out_strides = vec![1; shape.rank()];
+            for i in (0..shape.rank() - 1).rev() {
+                out_strides[i] = out_strides[i+1] * out_shape_vec[i+1];
+            }
+            
+            // Loop over all elements (can be optimized but fine for research readiness)
+            for out_idx in 0..storage.len() {
+                let mut current_idx = out_idx;
+                let mut in_idx = 0;
+                
+                for i in 0..shape.rank() {
+                    let coord = current_idx / out_strides[i];
+                    current_idx %= out_strides[i];
+                    
+                    // Map back to input coordinates
+                    let original_dim = if i == dim0 { dim1 } else if i == dim1 { dim0 } else { i };
+                    in_idx += coord * in_strides[original_dim];
+                }
+                
+                out_slice[out_idx] = in_slice[in_idx];
+            }
+            
+            let out_shape = Shape::new(out_shape_vec);
             self.from_slice::<T>(&out_shape, &out_slice, dtype)
         })
     }
@@ -154,12 +210,9 @@ impl Backend for CpuBackend {
         dispatch_dtype!(dtype, T, {
             let lhs_slice = lhs.as_slice::<T>();
             let rhs_slice = rhs.as_slice::<T>();
-            
-            let mut result = Vec::with_capacity(lhs_slice.len());
-            for i in 0..lhs_slice.len() {
-                result.push(lhs_slice[i].sub(rhs_slice[i]));
-            }
-            
+            let result: Vec<T> = lhs_slice.par_iter().zip(rhs_slice.par_iter())
+                .map(|(a, b)| a.sub(*b))
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -169,10 +222,9 @@ impl Backend for CpuBackend {
             let in_slice = storage.as_slice::<T>();
             let scalar_t = T::from_f32(scalar);
             
-            let mut result = Vec::with_capacity(in_slice.len());
-            for i in 0..in_slice.len() {
-                result.push(in_slice[i].mul(scalar_t));
-            }
+            let result: Vec<T> = in_slice.par_iter()
+                .map(|v| v.mul(scalar_t))
+                .collect();
             
             self.from_slice::<T>(shape, &result, dtype)
         })
@@ -186,22 +238,19 @@ impl Backend for CpuBackend {
         let lhs_f32 = unsafe { std::slice::from_raw_parts(lhs.as_bytes().as_ptr() as *const f32, lhs.len()) };
         let rhs_f32 = unsafe { std::slice::from_raw_parts(rhs.as_bytes().as_ptr() as *const f32, rhs.len()) };
         
-        let mut result = Vec::with_capacity(lhs.len());
-        for i in 0..lhs.len() {
-            result.push(lhs_f32[i] * rhs_f32[i]);
-        }
-        
+        let result: Vec<f32> = lhs_f32.par_iter().zip(rhs_f32.par_iter())
+            .map(|(a, b)| a * b)
+            .collect();
+            
         self.from_f32_slice(shape, &result)
     }
 
     fn relu(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         dispatch_float!(dtype, T, {
             let in_slice = storage.as_slice::<T>();
-            let mut result = Vec::with_capacity(in_slice.len());
-            for i in 0..in_slice.len() {
-                let val = in_slice[i];
-                result.push(if val.to_f32() > 0.0 { val } else { T::zero() });
-            }
+            let result: Vec<T> = in_slice.par_iter()
+                .map(|val| if val.to_f32() > 0.0 { *val } else { T::zero() })
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -209,12 +258,9 @@ impl Backend for CpuBackend {
     fn sigmoid(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         dispatch_float!(dtype, T, {
             let in_slice = storage.as_slice::<T>();
-            let mut result = Vec::with_capacity(in_slice.len());
-            for i in 0..in_slice.len() {
-                let val = in_slice[i];
-                let sig_f32 = 1.0 / (1.0 + (-val.to_f32()).exp());
-                result.push(T::from_f32(sig_f32));
-            }
+            let result: Vec<T> = in_slice.par_iter()
+                .map(|val| T::from_f32(1.0 / (1.0 + (-val.to_f32()).exp())))
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -223,10 +269,9 @@ impl Backend for CpuBackend {
         dispatch_float!(dtype, T, {
             let grad_slice = grad_out.as_slice::<T>();
             let in_slice = in_primal.as_slice::<T>();
-            let mut result = Vec::with_capacity(grad_slice.len());
-            for i in 0..grad_slice.len() {
-                result.push(if in_slice[i].to_f32() > 0.0 { grad_slice[i] } else { T::zero() });
-            }
+            let result: Vec<T> = grad_slice.par_iter().zip(in_slice.par_iter())
+                .map(|(g, i)| if i.to_f32() > 0.0 { *g } else { T::zero() })
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -235,12 +280,9 @@ impl Backend for CpuBackend {
         dispatch_float!(dtype, T, {
             let grad_slice = grad_out.as_slice::<T>();
             let out_slice = out_primal.as_slice::<T>();
-            let mut result = Vec::with_capacity(grad_slice.len());
-            for i in 0..grad_slice.len() {
-                let y = out_slice[i];
-                let val = grad_slice[i].mul(y).mul(T::one().sub(y));
-                result.push(val);
-            }
+            let result: Vec<T> = grad_slice.par_iter().zip(out_slice.par_iter())
+                .map(|(g, y)| g.mul(*y).mul(T::one().sub(*y)))
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -301,10 +343,9 @@ impl Backend for CpuBackend {
     fn exp(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         dispatch_float!(dtype, T, {
             let in_slice = storage.as_slice::<T>();
-            let mut result = Vec::with_capacity(in_slice.len());
-            for i in 0..in_slice.len() {
-                result.push(T::from_f32(in_slice[i].to_f32().exp()));
-            }
+            let result: Vec<T> = in_slice.par_iter()
+                .map(|val| T::from_f32(val.to_f32().exp()))
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -312,11 +353,9 @@ impl Backend for CpuBackend {
     fn log(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         dispatch_float!(dtype, T, {
             let in_slice = storage.as_slice::<T>();
-            let mut result = Vec::with_capacity(in_slice.len());
-            for i in 0..in_slice.len() {
-                // Add a small epsilon to prevent log(0) which becomes -inf and creates NaNs.
-                result.push(T::from_f32((in_slice[i].to_f32().max(1e-7)).ln()));
-            }
+            let result: Vec<T> = in_slice.par_iter()
+                .map(|val| T::from_f32((val.to_f32().max(1e-7)).ln()))
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -325,10 +364,9 @@ impl Backend for CpuBackend {
         dispatch_float!(dtype, T, {
             let grad_slice = grad_out.as_slice::<T>();
             let out_slice = out_primal.as_slice::<T>();
-            let mut result = Vec::with_capacity(grad_slice.len());
-            for i in 0..grad_slice.len() {
-                result.push(grad_slice[i].mul(out_slice[i]));
-            }
+            let result: Vec<T> = grad_slice.par_iter().zip(out_slice.par_iter())
+                .map(|(g, y)| g.mul(*y))
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -337,10 +375,9 @@ impl Backend for CpuBackend {
         dispatch_float!(dtype, T, {
             let grad_slice = grad_out.as_slice::<T>();
             let in_slice = in_primal.as_slice::<T>();
-            let mut result = Vec::with_capacity(grad_slice.len());
-            for i in 0..grad_slice.len() {
-                result.push(grad_slice[i].div(in_slice[i]));
-            }
+            let result: Vec<T> = grad_slice.par_iter().zip(in_slice.par_iter())
+                .map(|(g, x)| g.div(*x))
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -349,10 +386,9 @@ impl Backend for CpuBackend {
         dispatch_float!(dtype, T, {
             let lhs_slice = lhs.as_slice::<T>();
             let rhs_slice = rhs.as_slice::<T>();
-            let mut result = Vec::with_capacity(lhs_slice.len());
-            for i in 0..lhs_slice.len() {
-                result.push(lhs_slice[i].div(rhs_slice[i]));
-            }
+            let result: Vec<T> = lhs_slice.par_iter().zip(rhs_slice.par_iter())
+                .map(|(a, b)| a.div(*b))
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -360,10 +396,9 @@ impl Backend for CpuBackend {
     fn sqrt(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         dispatch_float!(dtype, T, {
             let in_slice = storage.as_slice::<T>();
-            let mut result = Vec::with_capacity(in_slice.len());
-            for i in 0..in_slice.len() {
-                result.push(T::from_f32(in_slice[i].to_f32().sqrt()));
-            }
+            let result: Vec<T> = in_slice.par_iter()
+                .map(|val| T::from_f32(val.to_f32().sqrt()))
+                .collect();
             self.from_slice::<T>(shape, &result, dtype)
         })
     }
@@ -609,5 +644,234 @@ impl Backend for CpuBackend {
             }
         }
         self.from_f32_slice(&Shape::new(vec![c_out]), &grad_b)
+    }
+
+    fn cast(&self, storage: &Self::Storage, _shape: &Shape, current_dtype: DType, target_dtype: DType) -> Result<Self::Storage> {
+        if current_dtype == target_dtype {
+            return Ok(storage.clone());
+        }
+
+        // For now, we mainly support casting to F32 as everything in CPU backend is internally F32 slices basically.
+        // Wait, CpuByteStorage doesn't actually store typed data natively yet (except as bytes).
+        // Since we only really use F32 right now, casting F32 to F32 is a no-op.
+        // If they ask for anything else, we'll try to convert.
+        
+        if current_dtype == target_dtype {
+            let mut out = CpuByteStorage::new(storage.as_bytes().len(), storage.len(), 4);
+            out.as_mut_bytes().copy_from_slice(storage.as_bytes());
+            return Ok(out);
+        }
+
+        if current_dtype == DType::I32 && target_dtype == DType::F32 {
+            let in_i32 = storage.as_slice::<i32>();
+            let mut out = CpuByteStorage::new(storage.len() * 4, storage.len(), 4);
+            let out_f32 = out.as_mut_slice::<f32>();
+            for (i, &val) in in_i32.iter().enumerate() {
+                out_f32[i] = val as f32;
+            }
+            return Ok(out);
+        } else if current_dtype == DType::F32 && target_dtype == DType::I32 {
+            let in_f32 = storage.as_slice::<f32>();
+            let mut out = CpuByteStorage::new(storage.len() * 4, storage.len(), 4);
+            let out_i32 = out.as_mut_slice::<i32>();
+            for (i, &val) in in_f32.iter().enumerate() {
+                out_i32[i] = val as i32;
+            }
+            return Ok(out);
+        }
+
+        Err(OrcaError::UnsupportedDType { 
+            op: "cast", 
+            dtype: target_dtype 
+        })
+    }
+
+    fn scatter(&self, storage: &Self::Storage, dim: usize, index: &Self::Storage, src: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        dispatch_dtype!(dtype, T, {
+            let base_slice = storage.as_slice::<T>();
+            let src_slice = src.as_slice::<T>();
+            // Assume index is stored as I32 internally for now (or F32 casted)
+            let idx_slice = index.as_slice::<f32>(); // In our engine everything is f32 internally except when explicitly casted
+            // Wait, index is likely F32 internally if they didn't cast to I32! 
+            
+            let mut result = base_slice.to_vec();
+            let base_strides = Self::compute_strides(shape);
+            
+            for i in 0..index_shape.num_elements() {
+                let multi = Self::linear_to_multi(i, index_shape);
+                let idx_val = idx_slice[i] as usize;
+                let mut base_multi = multi.clone();
+                base_multi[dim] = idx_val;
+                
+                let base_idx = Self::multi_to_linear(&base_multi, &base_strides);
+                result[base_idx] = src_slice[i];
+            }
+            self.from_slice::<T>(shape, &result, dtype)
+        })
+    }
+
+    fn gather(&self, storage: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        dispatch_dtype!(dtype, T, {
+            let src_slice = storage.as_slice::<T>();
+            let idx_slice = index.as_slice::<f32>();
+            
+            let mut result = vec![T::zero(); index_shape.num_elements()];
+            let in_strides = Self::compute_strides(shape);
+            
+            for i in 0..index_shape.num_elements() {
+                let mut multi = Self::linear_to_multi(i, index_shape);
+                let idx_val = idx_slice[i] as usize;
+                multi[dim] = idx_val;
+                
+                let src_idx = Self::multi_to_linear(&multi, &in_strides);
+                result[i] = src_slice[src_idx];
+            }
+            self.from_slice::<T>(index_shape, &result, dtype)
+        })
+    }
+
+    fn scatter_backward_src(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        // Gradient of scatter wrt src is just gather! 
+        // We gather the gradients from grad_out at the same indices.
+        self.gather(grad_out, dim, index, shape, index_shape, dtype)
+    }
+
+    fn scatter_backward_base(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        // Gradient of scatter wrt base is grad_out, but 0 at the scattered indices.
+        dispatch_dtype!(dtype, T, {
+            let grad_slice = grad_out.as_slice::<T>();
+            let idx_slice = index.as_slice::<f32>();
+            
+            let mut result = grad_slice.to_vec();
+            let base_strides = Self::compute_strides(shape);
+            
+            for i in 0..index_shape.num_elements() {
+                let multi = Self::linear_to_multi(i, index_shape);
+                let idx_val = idx_slice[i] as usize;
+                let mut base_multi = multi.clone();
+                base_multi[dim] = idx_val;
+                
+                let base_idx = Self::multi_to_linear(&base_multi, &base_strides);
+                result[base_idx] = T::zero(); // Zero out gradients for elements that were overwritten by src
+            }
+            self.from_slice::<T>(shape, &result, dtype)
+        })
+    }
+
+    fn gather_backward(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, _dtype: DType) -> Result<Self::Storage> {
+        let grad_out_f32 = unsafe { std::slice::from_raw_parts(grad_out.as_bytes().as_ptr() as *const f32, grad_out.len()) };
+        let index_f32 = unsafe { std::slice::from_raw_parts(index.as_bytes().as_ptr() as *const f32, index.len()) };
+        
+        let mut grad_in = vec![0.0; shape.num_elements()];
+        let _out_strides = Self::compute_strides(&index_shape.0);
+        let in_strides = Self::compute_strides(&shape.0);
+
+        for i in 0..index_shape.num_elements() {
+            let out_multi = Self::linear_to_multi(i, &index_shape.0);
+            let mut in_multi = out_multi.clone();
+            if in_multi.len() > dim {
+                in_multi[dim] = index_f32[i] as usize;
+            }
+            let in_idx = Self::multi_to_linear(&in_multi, &in_strides);
+            grad_in[in_idx] += grad_out_f32[i];
+        }
+        
+        self.from_f32_slice(shape, &grad_in)
+    }
+
+    fn from_bytes(&self, shape: &Shape, bytes: &[u8], dtype: DType) -> Result<Self::Storage> {
+        let expected_len = shape.num_elements() * dtype.element_size();
+        if bytes.len() != expected_len {
+            return Err(OrcaError::InternalError(format!("from_bytes: expected {} bytes, got {}", expected_len, bytes.len())));
+        }
+        let mut storage = CpuByteStorage::new(expected_len, shape.num_elements(), dtype.element_size());
+        storage.as_mut_bytes().copy_from_slice(bytes);
+        Ok(storage)
+    }
+
+    fn to_bytes(&self, storage: &Self::Storage) -> Result<Vec<u8>> {
+        let bytes = storage.as_bytes();
+        Ok(bytes.to_vec())
+    }
+
+    fn has_nan_or_inf(&self, storage: &Self::Storage, dtype: DType) -> Result<bool> {
+        dispatch_float!(dtype, T, {
+            let slice = storage.as_slice::<T>();
+            for &val in slice {
+                if !CpuNumeric::is_finite(val) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+    }
+
+    fn max_to_shape(&self, storage: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        dispatch_float!(dtype, T, {
+            let in_slice = storage.as_slice::<T>();
+            let mut out_data = vec![T::min_value(); out_shape.num_elements()];
+
+            let mut padded_out_shape = out_shape.0.clone();
+            if out_shape.rank() < in_shape.rank() {
+                padded_out_shape = Self::pad_shape_left(&out_shape.0, in_shape.rank());
+            }
+
+            let _in_strides = Self::compute_strides(&in_shape.0);
+            let out_strides = Self::compute_strides(&padded_out_shape);
+
+            for i in 0..in_shape.num_elements() {
+                let in_multi = Self::linear_to_multi(i, &in_shape.0);
+                let mut out_multi = vec![0; in_shape.rank()];
+                
+                for j in 0..in_shape.rank() {
+                    out_multi[j] = if padded_out_shape[j] == 1 { 0 } else { in_multi[j] };
+                }
+
+                let out_idx = Self::multi_to_linear(&out_multi, &out_strides);
+                let val = in_slice[i];
+                if val > out_data[out_idx] {
+                    out_data[out_idx] = val;
+                }
+            }
+            let mut out_storage = CpuByteStorage::new(out_shape.num_elements() * std::mem::size_of::<T>(), out_shape.num_elements(), std::mem::size_of::<T>());
+            out_storage.as_mut_slice::<T>().copy_from_slice(&out_data);
+            Ok(out_storage)
+        })
+    }
+
+    fn max_to_shape_backward(&self, grad_out: &Self::Storage, in_primal: &Self::Storage, out_primal: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        dispatch_float!(dtype, T, {
+            let grad_out_slice = grad_out.as_slice::<T>();
+            let in_primal_slice = in_primal.as_slice::<T>();
+            let out_primal_slice = out_primal.as_slice::<T>();
+
+            let mut grad_in = vec![T::zero(); in_shape.num_elements()];
+
+            let mut padded_out_shape = out_shape.0.clone();
+            if out_shape.rank() < in_shape.rank() {
+                padded_out_shape = Self::pad_shape_left(&out_shape.0, in_shape.rank());
+            }
+
+            let _in_strides = Self::compute_strides(&in_shape.0);
+            let out_strides = Self::compute_strides(&padded_out_shape);
+
+            for i in 0..in_shape.num_elements() {
+                let in_multi = Self::linear_to_multi(i, &in_shape.0);
+                let mut out_multi = vec![0; in_shape.rank()];
+                for j in 0..in_shape.rank() {
+                    out_multi[j] = if padded_out_shape[j] == 1 { 0 } else { in_multi[j] };
+                }
+
+                let out_idx = Self::multi_to_linear(&out_multi, &out_strides);
+                
+                // If it matches the max value, it gets the gradient
+                if in_primal_slice[i] == out_primal_slice[out_idx] {
+                    grad_in[i] = grad_in[i].add(grad_out_slice[out_idx]);
+                }
+            }
+            let mut grad_in_storage = CpuByteStorage::new(in_shape.num_elements() * std::mem::size_of::<T>(), in_shape.num_elements(), std::mem::size_of::<T>());
+            grad_in_storage.as_mut_slice::<T>().copy_from_slice(&grad_in);
+            Ok(grad_in_storage)
+        })
     }
 }

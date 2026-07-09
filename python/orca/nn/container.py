@@ -1,6 +1,6 @@
-from .module import Module
+from .model import Model
 
-class Sequential(Module):
+class Sequential(Model):
     """
     A sequential container. Modules will be added to it in the order they are passed in the constructor.
     """
@@ -12,5 +12,6 @@ class Sequential(Module):
 
     def forward(self, x):
         for name, module in self._modules.items():
-            x = module(x)
+            if name.isdigit():
+                x = module(x)
         return x

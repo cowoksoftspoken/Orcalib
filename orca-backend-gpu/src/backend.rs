@@ -173,7 +173,7 @@ impl GpuBackend {
             label: None,
             layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out_buffer.as_entire_binding() },
             ],
         });
@@ -208,8 +208,8 @@ impl GpuBackend {
             label: None,
             layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: lhs.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: rhs.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: lhs.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: rhs.buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: out_buffer.as_entire_binding() },
             ],
         });
@@ -265,7 +265,7 @@ impl Backend for GpuBackend {
         });
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.copy_buffer_to_buffer(&storage.buffer, 0, &staging, 0, size);
+        encoder.copy_buffer_to_buffer(&storage.buffer(), 0, &staging, 0, size);
         self.queue.submit(Some(encoder.finish()));
 
         let slice = staging.slice(..);
@@ -400,15 +400,15 @@ impl Backend for GpuBackend {
         });
 
         let bias_buf = match bias {
-            Some(b) => &b.buffer,
-            None => &input.buffer,
+            Some(b) => &b.buffer(),
+            None => &input.buffer(),
         };
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &self.pipelines.conv2d.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: weight.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: input.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: weight.buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: bias_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: out_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: uniform_buf.as_entire_binding() },
@@ -459,8 +459,8 @@ impl Backend for GpuBackend {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &self.pipelines.conv2d_bw_input.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: grad_out.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: weight.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: grad_out.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: weight.buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: grad_in.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: uniform_buf.as_entire_binding() },
             ],
@@ -509,8 +509,8 @@ impl Backend for GpuBackend {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &self.pipelines.conv2d_bw_weight.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: grad_out.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: input.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: grad_out.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: input.buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: grad_weight.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: uniform_buf.as_entire_binding() },
             ],
@@ -552,8 +552,8 @@ impl Backend for GpuBackend {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &self.pipelines.conv2d_bw_bias.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: grad_out.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: grad_out.buffer.as_entire_binding() }, // dummy
+                wgpu::BindGroupEntry { binding: 0, resource: grad_out.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: grad_out.buffer().as_entire_binding() }, // dummy
                 wgpu::BindGroupEntry { binding: 2, resource: grad_bias.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: uniform_buf.as_entire_binding() },
             ],
@@ -587,7 +587,7 @@ impl Backend for GpuBackend {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: uniform_buf.as_entire_binding() },
             ],
@@ -628,8 +628,8 @@ impl Backend for GpuBackend {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: lhs.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: rhs.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: lhs.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: rhs.buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: out_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: uniform_buf.as_entire_binding() },
             ],
@@ -650,7 +650,7 @@ impl Backend for GpuBackend {
         Ok(storage.clone()) // buffer memory doesn't change
     }
 
-    fn transpose(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+    fn transpose(&self, storage: &Self::Storage, shape: &Shape, dim0: usize, dim1: usize, dtype: DType) -> Result<Self::Storage> {
         let rows = shape[0] as u32;
         let cols = shape[1] as u32;
         let num_elements = (rows * cols) as usize;
@@ -672,7 +672,7 @@ impl Backend for GpuBackend {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: uniform_buf.as_entire_binding() },
             ],
@@ -721,7 +721,7 @@ impl Backend for GpuBackend {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: uniform_buf.as_entire_binding() },
             ],
@@ -775,7 +775,7 @@ impl Backend for GpuBackend {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: uniform_buf.as_entire_binding() },
             ],
@@ -789,5 +789,61 @@ impl Backend for GpuBackend {
         }
         self.queue.submit(Some(encoder.finish()));
         Ok(GpuStorage::new(out_buffer, num_elements, 4))
+    }
+
+    // Phase 6.1 Casting
+    fn cast(&self, storage: &Self::Storage, _shape: &Shape, current_dtype: DType, target_dtype: DType) -> Result<Self::Storage> {
+        if current_dtype == target_dtype {
+            return Ok(storage.clone());
+        }
+        
+        if target_dtype != DType::F32 {
+            return Err(OrcaError::UnsupportedDType { op: "cast", dtype: target_dtype });
+        }
+        
+        // Since GPU is effectively float32 everywhere for now, just clone the storage.
+        Ok(storage.clone())
+    }
+
+    // Phase 2.1 Indexing
+    fn scatter(&self, storage: &Self::Storage, dim: usize, index: &Self::Storage, src: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        unimplemented!("GPU scatter not implemented yet")
+    }
+    
+    fn gather(&self, storage: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        unimplemented!("GPU gather not implemented yet")
+    }
+    
+    fn scatter_backward_src(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        unimplemented!("GPU scatter_backward_src not implemented yet")
+    }
+    
+    fn scatter_backward_base(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        unimplemented!("GPU scatter_backward_base not implemented yet")
+    }
+
+    fn gather_backward(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        unimplemented!("Phase 2.1 Indexing Backward not implemented for WgpuBackend yet");
+    }
+
+    // Phase 1-2 Production Hardening
+    fn from_bytes(&self, _shape: &Shape, _bytes: &[u8], _dtype: DType) -> Result<Self::Storage> {
+        unimplemented!("from_bytes not implemented for WgpuBackend yet");
+    }
+
+    fn to_bytes(&self, _storage: &Self::Storage) -> Result<Vec<u8>> {
+        unimplemented!("to_bytes not implemented for WgpuBackend yet");
+    }
+
+    fn has_nan_or_inf(&self, _storage: &Self::Storage, _dtype: DType) -> Result<bool> {
+        unimplemented!("has_nan_or_inf not implemented for WgpuBackend yet");
+    }
+
+    fn max_to_shape(&self, _storage: &Self::Storage, _in_shape: &Shape, _out_shape: &Shape, _dtype: DType) -> Result<Self::Storage> {
+        unimplemented!("max_to_shape not implemented for WgpuBackend yet");
+    }
+
+    fn max_to_shape_backward(&self, _grad_out: &Self::Storage, _in_primal: &Self::Storage, _out_primal: &Self::Storage, _in_shape: &Shape, _out_shape: &Shape, _dtype: DType) -> Result<Self::Storage> {
+        unimplemented!("max_to_shape_backward not implemented for WgpuBackend yet");
     }
 }

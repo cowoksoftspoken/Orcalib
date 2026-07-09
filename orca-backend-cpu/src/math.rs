@@ -12,6 +12,8 @@ pub trait CpuNumeric: Copy + Debug + Send + Sync + Default + 'static {
     fn max(self, other: Self) -> Self;
     fn zero() -> Self;
     fn one() -> Self;
+    fn is_finite(self) -> bool;
+    fn min_value() -> Self;
 }
 
 pub trait CpuFloat: CpuNumeric {
@@ -32,6 +34,8 @@ macro_rules! impl_numeric_float {
             #[inline(always)] fn max(self, other: Self) -> Self { if self > other { self } else { other } }
             #[inline(always)] fn zero() -> Self { 0.0 }
             #[inline(always)] fn one() -> Self { 1.0 }
+            #[inline(always)] fn is_finite(self) -> bool { self.is_finite() }
+            #[inline(always)] fn min_value() -> Self { <$t>::MIN }
         }
 
         impl CpuFloat for $t {
@@ -57,6 +61,8 @@ macro_rules! impl_numeric_int {
             #[inline(always)] fn max(self, other: Self) -> Self { if self > other { self } else { other } }
             #[inline(always)] fn zero() -> Self { 0 }
             #[inline(always)] fn one() -> Self { 1 }
+            #[inline(always)] fn is_finite(self) -> bool { true }
+            #[inline(always)] fn min_value() -> Self { <$t>::MIN }
         }
     };
 }
@@ -75,6 +81,8 @@ impl CpuNumeric for bool {
     #[inline(always)] fn max(self, other: Self) -> Self { self | other }
     #[inline(always)] fn zero() -> Self { false }
     #[inline(always)] fn one() -> Self { true }
+    #[inline(always)] fn is_finite(self) -> bool { true }
+    #[inline(always)] fn min_value() -> Self { false }
 }
 
 #[macro_export]

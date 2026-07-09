@@ -17,4 +17,5 @@ orca-tensor = { path = "../orca-tensor" }
 orca-backend-cpu = { path = "../orca-backend-cpu" }
 orca-backend-gpu = { path = "../orca-backend-gpu" }
 orca-autograd = { path = "../orca-autograd" }
+orca-serialize = { path = "../orca-serialize" }
 pyo3.workspace = true

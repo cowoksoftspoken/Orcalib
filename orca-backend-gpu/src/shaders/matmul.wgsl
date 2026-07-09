@@ -1,3 +1,5 @@
+const TILE_SIZE: u32 = 16u;
+
 @group(0) @binding(0) var<storage, read> lhs: array<f32>;
 @group(0) @binding(1) var<storage, read> rhs: array<f32>;
 @group(0) @binding(2) var<storage, read_write> out: array<f32>;
@@ -10,16 +12,53 @@ struct Uniforms {
 }
 @group(0) @binding(3) var<uniform> uniforms: Uniforms;
 
+var<workgroup> tile_a: array<array<f32, 16>, 16>;
+var<workgroup> tile_b: array<array<f32, 16>, 16>;
+
 @compute @workgroup_size(16, 16)
-fn matmul_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+fn matmul_main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) group_id: vec3<u32>
+) {
     let row = global_id.y;
     let col = global_id.x;
-
-    if (row < uniforms.M && col < uniforms.N) {
-        var sum = 0.0;
-        for (var i = 0u; i < uniforms.K; i = i + 1u) {
-            sum = sum + lhs[row * uniforms.K + i] * rhs[i * uniforms.N + col];
+    let local_row = local_id.y;
+    let local_col = local_id.x;
+    
+    var sum = 0.0;
+    
+    // Number of tiles
+    let num_tiles = (uniforms.K + TILE_SIZE - 1u) / TILE_SIZE;
+    
+    for (var t = 0u; t < num_tiles; t = t + 1u) {
+        // Load tile_a
+        let a_col = t * TILE_SIZE + local_col;
+        if (row < uniforms.M && a_col < uniforms.K) {
+            tile_a[local_row][local_col] = lhs[row * uniforms.K + a_col];
+        } else {
+            tile_a[local_row][local_col] = 0.0;
         }
+        
+        // Load tile_b
+        let b_row = t * TILE_SIZE + local_row;
+        if (b_row < uniforms.K && col < uniforms.N) {
+            tile_b[local_row][local_col] = rhs[b_row * uniforms.N + col];
+        } else {
+            tile_b[local_row][local_col] = 0.0;
+        }
+        
+        workgroupBarrier();
+        
+        // Multiply the tiles together
+        for (var k = 0u; k < TILE_SIZE; k = k + 1u) {
+            sum = sum + tile_a[local_row][k] * tile_b[k][local_col];
+        }
+        
+        workgroupBarrier();
+    }
+    
+    if (row < uniforms.M && col < uniforms.N) {
         out[row * uniforms.N + col] = sum;
     }
 }

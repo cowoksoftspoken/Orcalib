@@ -9,13 +9,13 @@ class LayerNorm(Module):
     Applies Layer Normalization over a mini-batch of inputs as described in the paper
     Layer Normalization.
     """
-    def __init__(self, normalized_shape: int, eps: float = 1e-5):
+    def __init__(self, normalized_shape: int, eps: float = 1e-5, device=None):
         super().__init__()
         self.normalized_shape = normalized_shape
         self.eps = eps
         
-        self.weight = Parameter(Tensor.from_list([1.0] * normalized_shape, shape=[1, normalized_shape], requires_grad=True))
-        self.bias = Parameter(Tensor.from_list([0.0] * normalized_shape, shape=[1, normalized_shape], requires_grad=True))
+        self.weight = Parameter(Tensor.ones([1, normalized_shape], requires_grad=True, device=device))
+        self.bias = Parameter(Tensor.zeros([1, normalized_shape], requires_grad=True, device=device))
 
     def forward(self, x: Tensor) -> Tensor:
         shape = list(x.shape)
@@ -47,21 +47,20 @@ class LayerNorm(Module):
 class BatchNorm2d(Module):
     """
     Applies Batch Normalization over a 4D input (a mini-batch of 2D inputs with additional channel dimension).
-    Since we do not have a robust axis-wise mean/variance for 4D tensors yet, this is a placeholder
-    that just applies affine transformation until Conv2d is fully implemented.
+    This performs proper 4D batch normalization across the spatial and batch dimensions.
     """
-    def __init__(self, num_features: int, eps: float = 1e-5, momentum: float = 0.1):
+    def __init__(self, num_features: int, eps: float = 1e-5, momentum: float = 0.1, device=None):
         super().__init__()
         self.num_features = num_features
         self.eps = eps
         self.momentum = momentum
         
-        self.weight = Parameter(Tensor.from_list([1.0] * num_features, shape=[1, num_features, 1, 1], requires_grad=True))
-        self.bias = Parameter(Tensor.from_list([0.0] * num_features, shape=[1, num_features, 1, 1], requires_grad=True))
+        self.weight = Parameter(Tensor.ones([1, num_features, 1, 1], requires_grad=True, device=device))
+        self.bias = Parameter(Tensor.zeros([1, num_features, 1, 1], requires_grad=True, device=device))
         
         # Buffers for running statistics
-        self.register_buffer('running_mean', Tensor.from_list([0.0] * num_features, shape=[1, num_features, 1, 1], requires_grad=False))
-        self.register_buffer('running_var', Tensor.from_list([1.0] * num_features, shape=[1, num_features, 1, 1], requires_grad=False))
+        self.register_buffer('running_mean', Tensor.zeros([1, num_features, 1, 1], requires_grad=False, device=device))
+        self.register_buffer('running_var', Tensor.ones([1, num_features, 1, 1], requires_grad=False, device=device))
 
     def forward(self, x: Tensor) -> Tensor:
         shape = x.shape

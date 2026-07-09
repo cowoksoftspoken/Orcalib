@@ -23,7 +23,6 @@ pub struct Tensor<B: Backend> {
 impl<B: Backend> Tensor<B> {
     pub fn zeros(backend: B, shape: impl Into<Shape>, dtype: DType) -> Result<Self> {
         let shape = shape.into();
-        // Default contiguous strides
         let strides = Self::compute_contiguous_strides(&shape);
         let storage = backend.zeros(&shape, dtype)?;
 
@@ -36,6 +35,19 @@ impl<B: Backend> Tensor<B> {
         })
     }
 
+    /// Creates a new tensor filled with ones.
+    pub fn ones(backend: B, shape: impl Into<Shape>, _dtype: DType) -> Result<Self> {
+        let shape = shape.into();
+        let data = vec![1.0; shape.num_elements()];
+        Self::from_f32_slice(backend, &data, shape)
+    }
+
+    /// Creates a 0-dimensional (scalar) tensor with a specific value.
+    pub fn scalar(backend: B, value: f32, _dtype: DType) -> Result<Self> {
+        let shape = Shape::new(vec![1]);
+        Self::from_f32_slice(backend, &[value], shape)
+    }
+
     /// Creates a new tensor filled with random uniform values between low and high.
     pub fn rand_uniform(backend: B, shape: impl Into<Shape>, low: f32, high: f32, _dtype: DType) -> Result<Self> {
         use rand::Rng;
@@ -46,6 +58,27 @@ impl<B: Backend> Tensor<B> {
         let mut data = Vec::with_capacity(num_elements);
         for _ in 0..num_elements {
             data.push(rng.gen_range(low..high));
+        }
+        
+        Self::from_f32_slice(backend, &data, shape.clone())
+    }
+
+    /// Creates a new tensor filled with random normal values.
+    pub fn randn(backend: B, shape: impl Into<Shape>, mean: f32, std: f32, _dtype: DType) -> Result<Self> {
+        use rand_distr::{Normal, Distribution};
+        let shape = shape.into();
+        let num_elements = shape.num_elements();
+        
+        let normal = Normal::new(mean, std).map_err(|_| OrcaError::ShapeMismatch {
+            op: "randn",
+            expected: "valid std dev".to_string(),
+            got: "invalid std dev".to_string(),
+        })?;
+        
+        let mut rng = rand::thread_rng();
+        let mut data = Vec::with_capacity(num_elements);
+        for _ in 0..num_elements {
+            data.push(normal.sample(&mut rng));
         }
         
         Self::from_f32_slice(backend, &data, shape.clone())
@@ -149,6 +182,31 @@ impl<B: Backend> Tensor<B> {
     }
 
     /// Extracts the tensor data as an f32 vec.
+    pub fn has_nan_or_inf(&self) -> Result<bool> {
+        self.backend.has_nan_or_inf(&self.storage, self.dtype)
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        self.backend.to_bytes(&self.storage)
+    }
+
+    pub fn from_bytes(backend: B, bytes: &[u8], shape: Shape, dtype: DType) -> Result<Self> {
+        let storage = backend.from_bytes(&shape, bytes, dtype)?;
+        let mut strides = vec![0; shape.rank()];
+        let mut current = 1;
+        for i in (0..shape.rank()).rev() {
+            strides[i] = current;
+            current *= shape.0[i];
+        }
+        Ok(Self {
+            storage,
+            shape,
+            strides,
+            dtype,
+            backend,
+        })
+    }
+
     pub fn to_f32_vec(&self) -> Result<Vec<f32>> {
         if self.dtype != DType::F32 {
             return Err(OrcaError::UnsupportedDType {
@@ -173,62 +231,73 @@ impl<B: Backend> Tensor<B> {
 
     /// Matrix multiplication.
     pub fn matmul(&self, rhs: &Self) -> Result<Self> {
-        if self.shape.rank() != 2 || rhs.shape.rank() != 2 {
+        let rank1 = self.shape.rank();
+        let rank2 = rhs.shape.rank();
+        if rank1 < 2 || rank2 < 2 {
             return Err(OrcaError::ShapeMismatch {
                 op: "matmul",
-                expected: "2D tensors".into(),
-                got: format!("{}D and {}D", self.shape.rank(), rhs.shape.rank()),
+                expected: ">= 2D tensors".into(),
+                got: format!("{}D and {}D", rank1, rank2),
             });
         }
-        if self.shape[1] != rhs.shape[0] {
+        if self.shape[rank1 - 1] != rhs.shape[rank2 - 2] {
             return Err(OrcaError::ShapeMismatch {
                 op: "matmul",
-                expected: format!("Inner dimensions must match: {} == {}", self.shape[1], rhs.shape[0]),
-                got: format!("{} != {}", self.shape[1], rhs.shape[0]),
+                expected: format!("Inner dimensions must match: {} == {}", self.shape[rank1 - 1], rhs.shape[rank2 - 2]),
+                got: format!("{} != {}", self.shape[rank1 - 1], rhs.shape[rank2 - 2]),
             });
         }
+        
+        // Ensure batch dimensions match
+        if rank1 != rank2 {
+            // For now, require same rank
+            return Err(OrcaError::ShapeMismatch {
+                op: "matmul",
+                expected: "Same rank for batched matmul".into(),
+                got: format!("{}D and {}D", rank1, rank2),
+            });
+        }
+        for i in 0..rank1 - 2 {
+            if self.shape[i] != rhs.shape[i] {
+                return Err(OrcaError::ShapeMismatch {
+                    op: "matmul",
+                    expected: "Matching batch dimensions".into(),
+                    got: format!("{} != {}", self.shape[i], rhs.shape[i]),
+                });
+            }
+        }
+        
         if self.backend.device() != rhs.backend.device() {
             return Err(OrcaError::DeviceMismatch(self.backend.device(), rhs.backend.device()));
         }
-        if self.dtype != rhs.dtype {
-            return Err(OrcaError::InternalError("DTypes must match for matmul".into()));
-        }
+        let target_dtype = self.dtype.promote(rhs.dtype);
+        let lhs_storage = if self.dtype != target_dtype {
+            self.backend.cast(&self.storage, &self.shape, self.dtype, target_dtype)?
+        } else {
+            self.storage.clone()
+        };
+        let rhs_storage = if rhs.dtype != target_dtype {
+            rhs.backend.cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
+        } else {
+            rhs.storage.clone()
+        };
 
-        let out_shape = Shape::new(vec![self.shape[0], rhs.shape[1]]);
-        let storage = self.backend.matmul(&self.storage, &rhs.storage, &self.shape, &rhs.shape, self.dtype)?;
+        let mut out_shape_vec = self.shape.to_vec();
+        out_shape_vec[rank1 - 2] = self.shape[rank1 - 2];
+        out_shape_vec[rank1 - 1] = rhs.shape[rank2 - 1];
+        let out_shape = Shape::new(out_shape_vec);
+        let storage = self.backend.matmul(&lhs_storage, &rhs_storage, &self.shape, &rhs.shape, target_dtype)?;
         let strides = Self::compute_contiguous_strides(&out_shape);
         
         Ok(Tensor {
             storage,
             shape: out_shape,
             strides,
-            dtype: self.dtype,
+            dtype: target_dtype,
             backend: self.backend.clone(),
         })
     }
 
-    /// Transposes a 2D tensor.
-    pub fn transpose(&self) -> Result<Self> {
-        if self.shape.rank() != 2 {
-            return Err(OrcaError::ShapeMismatch {
-                op: "transpose",
-                expected: "2D tensor".into(),
-                got: format!("{}D", self.shape.rank()),
-            });
-        }
-        
-        let out_shape = Shape::new(vec![self.shape[1], self.shape[0]]);
-        let storage = self.backend.transpose(&self.storage, &self.shape, self.dtype)?;
-        let strides = Self::compute_contiguous_strides(&out_shape);
-
-        Ok(Tensor {
-            storage,
-            shape: out_shape,
-            strides,
-            dtype: self.dtype,
-            backend: self.backend.clone(),
-        })
-    }
 
     /// Multiply by a scalar.
     pub fn mul_scalar(&self, scalar: f32) -> Result<Self> {
@@ -286,6 +355,23 @@ impl<B: Backend> Tensor<B> {
 
     pub fn sum_to_shape(&self, out_shape: &Shape) -> Result<Self> {
         let storage = self.backend.sum_to_shape(&self.storage, &self.shape, out_shape, self.dtype)?;
+        let mut strides = vec![0; out_shape.rank()];
+        let mut current = 1;
+        for i in (0..out_shape.rank()).rev() {
+            strides[i] = current;
+            current *= out_shape.0[i];
+        }
+        Ok(Self {
+            storage,
+            shape: out_shape.clone(),
+            strides,
+            dtype: self.dtype,
+            backend: self.backend.clone(),
+        })
+    }
+
+    pub fn max_to_shape(&self, out_shape: &Shape) -> Result<Self> {
+        let storage = self.backend.max_to_shape(&self.storage, &self.shape, out_shape, self.dtype)?;
         let mut strides = vec![0; out_shape.rank()];
         let mut current = 1;
         for i in (0..out_shape.rank()).rev() {
@@ -364,6 +450,101 @@ impl<B: Backend> Tensor<B> {
             backend: self.backend.clone(),
         })
     }
+    
+    pub fn gather(&self, dim: usize, index: &Self) -> Result<Self> {
+        let storage = self.backend.gather(&self.storage, dim, &index.storage, &self.shape, &index.shape, self.dtype)?;
+        let strides = Self::compute_contiguous_strides(&index.shape);
+        Ok(Self {
+            storage,
+            shape: index.shape.clone(),
+            strides,
+            dtype: self.dtype,
+            backend: self.backend.clone(),
+        })
+    }
+    
+    pub fn scatter(&self, dim: usize, index: &Self, src: &Self) -> Result<Self> {
+        let storage = self.backend.scatter(&self.storage, dim, &index.storage, &src.storage, &self.shape, &index.shape, self.dtype)?;
+        let strides = Self::compute_contiguous_strides(&self.shape);
+        Ok(Self {
+            storage,
+            shape: self.shape.clone(),
+            strides,
+            dtype: self.dtype,
+            backend: self.backend.clone(),
+        })
+    }
+    pub fn transpose(&self, dim0: usize, dim1: usize) -> Result<Self> {
+        let storage = self.backend.transpose(&self.storage, &self.shape, dim0, dim1, self.dtype)?;
+        let mut new_shape_vec = self.shape.to_vec();
+        new_shape_vec.swap(dim0, dim1);
+        let shape = Shape::new(new_shape_vec);
+        let strides = Self::compute_contiguous_strides(&shape);
+        Ok(Self {
+            storage,
+            shape,
+            strides,
+            dtype: self.dtype,
+            backend: self.backend.clone(),
+        })
+    }
+
+    pub fn einsum(equation: &str, inputs: &[&Self]) -> Result<Self> {
+        let parts: Vec<&str> = equation.split("->").collect();
+        if parts.len() != 2 {
+            return Err(OrcaError::InternalError("Invalid einsum equation".into()));
+        }
+        
+        let lhs_rhs: Vec<&str> = parts[0].split(',').collect();
+        if lhs_rhs.len() != 2 || inputs.len() != 2 {
+            return Err(OrcaError::InternalError("Currently only 2-operand einsum is supported".into()));
+        }
+        
+        let a_str = lhs_rhs[0].trim();
+        let b_str = lhs_rhs[1].trim();
+        let out_str = parts[1].trim();
+        
+        let a = inputs[0];
+        let b = inputs[1];
+        
+        // Find matching characters between a_str and b_str that are NOT in out_str. These are the contraction axes.
+        let mut contract_a = Vec::new();
+        let mut contract_b = Vec::new();
+        let mut batch_a = Vec::new();
+        let mut batch_b = Vec::new();
+        
+        for (i, c) in a_str.chars().enumerate() {
+            if !out_str.contains(c) {
+                contract_a.push(i);
+            } else if b_str.contains(c) {
+                batch_a.push(i);
+            }
+        }
+        
+        for (i, c) in b_str.chars().enumerate() {
+            if !out_str.contains(c) {
+                contract_b.push(i);
+            } else if a_str.contains(c) {
+                batch_b.push(i);
+            }
+        }
+        
+        // Very basic matcher for batched matmul where last 2 dims are matrix dims
+        // This is still limited but dynamically detects transpositions instead of hardcoding equations
+        
+        // If B's contract dimension is its last dimension, we need to transpose it so it's the second-to-last
+        // Actually, standard matmul is (..., M, K) @ (..., K, N)
+        // If a_str = "bhqd", b_str = "bhkd" (K=d) -> Q @ K.T -> b needs transpose of last two dims
+        let b_contract = contract_b.last().copied().unwrap_or(b_str.len() - 2);
+        
+        if b_contract == b_str.len() - 1 {
+            // b needs transposition for matmul
+            let b_t = b.transpose(b_str.len() - 2, b_str.len() - 1)?;
+            a.matmul(&b_t)
+        } else {
+            a.matmul(b)
+        }
+    }
 }
 
 use std::ops::{Sub, Mul, Div};
@@ -382,17 +563,25 @@ impl<B: Backend> Div for &Tensor<B> {
         if self.backend.device() != rhs.backend.device() {
             return Err(OrcaError::DeviceMismatch(self.backend.device(), rhs.backend.device()));
         }
-        if self.dtype != rhs.dtype {
-            return Err(OrcaError::InternalError("DTypes must match for element-wise division".into()));
-        }
+        let target_dtype = self.dtype.promote(rhs.dtype);
+        let lhs_storage = if self.dtype != target_dtype {
+            self.backend.cast(&self.storage, &self.shape, self.dtype, target_dtype)?
+        } else {
+            self.storage.clone()
+        };
+        let rhs_storage = if rhs.dtype != target_dtype {
+            rhs.backend.cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
+        } else {
+            rhs.storage.clone()
+        };
 
-        let storage = self.backend.div(&self.storage, &rhs.storage, &self.shape, self.dtype)?;
+        let storage = self.backend.div(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
         
         Ok(Tensor {
             storage,
             shape: self.shape.clone(),
             strides: self.strides.clone(),
-            dtype: self.dtype,
+            dtype: target_dtype,
             backend: self.backend.clone(),
         })
     }
@@ -412,18 +601,25 @@ impl<B: Backend> Add for &Tensor<B> {
         if self.backend.device() != rhs.backend.device() {
             return Err(OrcaError::DeviceMismatch(self.backend.device(), rhs.backend.device()));
         }
-        if self.dtype != rhs.dtype {
-            // In the future we should promote dtypes, but for now we require them to match
-            return Err(OrcaError::InternalError("DTypes must match for addition".into()));
-        }
+        let target_dtype = self.dtype.promote(rhs.dtype);
+        let lhs_storage = if self.dtype != target_dtype {
+            self.backend.cast(&self.storage, &self.shape, self.dtype, target_dtype)?
+        } else {
+            self.storage.clone()
+        };
+        let rhs_storage = if rhs.dtype != target_dtype {
+            rhs.backend.cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
+        } else {
+            rhs.storage.clone()
+        };
 
-        let storage = self.backend.add(&self.storage, &rhs.storage, &self.shape, self.dtype)?;
+        let storage = self.backend.add(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
         
         Ok(Tensor {
             storage,
             shape: self.shape.clone(),
             strides: self.strides.clone(),
-            dtype: self.dtype,
+            dtype: target_dtype,
             backend: self.backend.clone(),
         })
     }
@@ -443,17 +639,25 @@ impl<B: Backend> Sub for &Tensor<B> {
         if self.backend.device() != rhs.backend.device() {
             return Err(OrcaError::DeviceMismatch(self.backend.device(), rhs.backend.device()));
         }
-        if self.dtype != rhs.dtype {
-            return Err(OrcaError::InternalError("DTypes must match for subtraction".into()));
-        }
+        let target_dtype = self.dtype.promote(rhs.dtype);
+        let lhs_storage = if self.dtype != target_dtype {
+            self.backend.cast(&self.storage, &self.shape, self.dtype, target_dtype)?
+        } else {
+            self.storage.clone()
+        };
+        let rhs_storage = if rhs.dtype != target_dtype {
+            rhs.backend.cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
+        } else {
+            rhs.storage.clone()
+        };
 
-        let storage = self.backend.sub(&self.storage, &rhs.storage, &self.shape, self.dtype)?;
+        let storage = self.backend.sub(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
         
         Ok(Tensor {
             storage,
             shape: self.shape.clone(),
             strides: self.strides.clone(),
-            dtype: self.dtype,
+            dtype: target_dtype,
             backend: self.backend.clone(),
         })
     }
@@ -473,17 +677,25 @@ impl<B: Backend> Mul for &Tensor<B> {
         if self.backend.device() != rhs.backend.device() {
             return Err(OrcaError::DeviceMismatch(self.backend.device(), rhs.backend.device()));
         }
-        if self.dtype != rhs.dtype {
-            return Err(OrcaError::InternalError("DTypes must match for element-wise multiplication".into()));
-        }
+        let target_dtype = self.dtype.promote(rhs.dtype);
+        let lhs_storage = if self.dtype != target_dtype {
+            self.backend.cast(&self.storage, &self.shape, self.dtype, target_dtype)?
+        } else {
+            self.storage.clone()
+        };
+        let rhs_storage = if rhs.dtype != target_dtype {
+            rhs.backend.cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
+        } else {
+            rhs.storage.clone()
+        };
 
-        let storage = self.backend.mul(&self.storage, &rhs.storage, &self.shape, self.dtype)?;
+        let storage = self.backend.mul(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
         
         Ok(Tensor {
             storage,
             shape: self.shape.clone(),
             strides: self.strides.clone(),
-            dtype: self.dtype,
+            dtype: target_dtype,
             backend: self.backend.clone(),
         })
     }

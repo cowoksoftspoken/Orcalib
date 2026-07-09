@@ -4,12 +4,12 @@ members = [
     "orca-tensor",
     "orca-backend-cpu",
     "orca-autograd",
-    "orca-python", "orca-backend-gpu",
+    "orca-python", "orca-backend-gpu", "orca-serialize",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0"
+version = "0.1.0"
 edition = "2021"
 authors = ["Orca Contributors"]
 license = "MIT OR Apache-2.0"

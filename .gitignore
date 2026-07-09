@@ -43,3 +43,9 @@ venv.bak/
 
 # MacOS
 .DS_Store
+
+# Output & Checkpoints
+*.log
+*.pkl
+*.safetensors
+*.pdb

@@ -17,6 +17,14 @@ class Normalize:
         self.std = std
 
     def __call__(self, x):
+        import numpy as np
+        if isinstance(x, np.ndarray):
+            mean = np.array(self.mean)
+            std = np.array(self.std)
+            if x.ndim == 3 and x.shape[0] == len(self.mean):
+                mean = mean.reshape(-1, 1, 1)
+                std = std.reshape(-1, 1, 1)
+            return (x - mean) / (std + 1e-7)
         # Apply this to flat lists since DataLoader handles list concatenation
         if isinstance(x, list):
             # Assumes single channel flat image
@@ -40,11 +48,25 @@ class ToTensor:
 class RandomCrop:
     """Crop the given image at a random location."""
     def __init__(self, size):
-        self.size = size
+        if isinstance(size, int):
+            self.size = (size, size)
+        else:
+            self.size = size
 
     def __call__(self, x):
-        # Implementation depends on image shape, which isn't stored in flat lists.
-        # This will be fully implemented when Conv2d and Nd image datasets are added.
+        import numpy as np
+        if isinstance(x, np.ndarray) and x.ndim >= 2:
+            h, w = x.shape[-2:]
+            th, tw = self.size
+            if h < th or w < tw:
+                raise ValueError(f"Required crop size {self.size} is larger than input image size {(h, w)}")
+            if w == tw and h == th:
+                return x
+            i = random.randint(0, h - th)
+            j = random.randint(0, w - tw)
+            if x.ndim == 3:
+                return x[:, i:i+th, j:j+tw]
+            return x[i:i+th, j:j+tw]
         return x
 
 class RandomFlip:
@@ -53,7 +75,10 @@ class RandomFlip:
         self.p = p
 
     def __call__(self, x):
+        import numpy as np
         if random.random() < self.p:
+            if isinstance(x, np.ndarray) and x.ndim >= 2:
+                return np.flip(x, axis=-1).copy()
             if isinstance(x, list):
                 # Naive reverse for 1D lists. Real 2D flip needs shape info.
                 return x[::-1]

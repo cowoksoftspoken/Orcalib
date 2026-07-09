@@ -36,8 +36,8 @@ pub trait Backend: Clone + Send + Sync + Debug + 'static {
     /// Matrix multiplication of two 2D tensors.
     fn matmul(&self, lhs: &Self::Storage, rhs: &Self::Storage, lhs_shape: &Shape, rhs_shape: &Shape, dtype: DType) -> Result<Self::Storage>;
 
-    /// Transpose of a 2D tensor.
-    fn transpose(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage>;
+    /// Transpose dimensions of an N-dimensional tensor.
+    fn transpose(&self, storage: &Self::Storage, shape: &Shape, dim0: usize, dim1: usize, dtype: DType) -> Result<Self::Storage>;
 
     fn add(&self, lhs: &Self::Storage, rhs: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage>;
     fn sub(&self, lhs: &Self::Storage, rhs: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage>;
@@ -90,4 +90,21 @@ pub trait Backend: Clone + Send + Sync + Debug + 'static {
                               padding: usize, stride: usize, dilation: usize, groups: usize, dtype: DType) -> Result<Self::Storage>;
                               
     fn conv2d_backward_bias(&self, grad_out: &Self::Storage, out_shape: &Shape, dtype: DType) -> Result<Self::Storage>;
+
+    // Phase 6.1 Casting
+    fn cast(&self, storage: &Self::Storage, shape: &Shape, current_dtype: DType, target_dtype: DType) -> Result<Self::Storage>;
+
+    // Phase 2.1 Indexing
+    fn scatter(&self, storage: &Self::Storage, dim: usize, index: &Self::Storage, src: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage>;
+    fn gather(&self, storage: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage>;
+    fn scatter_backward_src(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage>;
+    fn scatter_backward_base(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage>;
+    fn gather_backward(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage>;
+
+    // Phase 1-2 Production Hardening
+    fn from_bytes(&self, shape: &Shape, bytes: &[u8], dtype: DType) -> Result<Self::Storage>;
+    fn to_bytes(&self, storage: &Self::Storage) -> Result<Vec<u8>>;
+    fn has_nan_or_inf(&self, storage: &Self::Storage, dtype: DType) -> Result<bool>;
+    fn max_to_shape(&self, storage: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage>;
+    fn max_to_shape_backward(&self, grad_out: &Self::Storage, in_primal: &Self::Storage, out_primal: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage>;
 }

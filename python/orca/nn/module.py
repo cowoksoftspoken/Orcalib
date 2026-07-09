@@ -1,7 +1,7 @@
 from .parameter import Parameter
 import orca
-import numpy as np
-from safetensors.numpy import save_file, load_file
+import orca
+from orca.tensor import Tensor
 
 class Module:
     """
@@ -107,39 +107,35 @@ class Module:
             module.load_state_dict(module_state)
 
     def save_weights(self, filepath):
-        state = self.state_dict()
-        # Convert flat lists to properly shaped numpy arrays for safetensors
-        np_state = {}
-        for name, param in self._parameters.items():
-            shape = param.tensor.shape
-            np_state[name] = np.array(state[name], dtype=np.float32).reshape(shape)
-        
-        for name, module in self._modules.items():
-            module_state = module.state_dict(prefix=name + '.')
-            for k, v in module_state.items():
-                # We need to find the shape of the parameter inside the submodule
-                # This requires a bit of digging, or we can just save it flat for now.
-                # Actually, safetensors requires contiguous arrays and shape.
-                # Let's get the shape from the actual parameter objects!
-                pass
-        
-        # A better approach: gather all parameters directly with their names
-        np_state = {}
+        # Gather all parameters natively as PyTensor
+        state = {}
         def _gather_params(mod, prefix=''):
             for n, p in mod._parameters.items():
-                np_state[prefix + n] = np.array(p.tensor.to_list(), dtype=np.float32).reshape(p.tensor.shape)
+                state[prefix + n] = p.tensor
             for n, b in mod._buffers.items():
                 if isinstance(b, orca.Tensor):
-                    np_state[prefix + n] = np.array(b.to_list(), dtype=np.float32).reshape(b.shape)
-                else:
-                    np_state[prefix + n] = np.array([b], dtype=np.float32)
+                    state[prefix + n] = b
             for n, m in mod._modules.items():
                 _gather_params(m, prefix + n + '.')
         
         _gather_params(self)
-        save_file(np_state, filepath)
+        orca.save_tensors(filepath, state)
 
     def load_weights(self, filepath):
-        np_state = load_file(filepath)
-        state = {k: v.flatten().tolist() for k, v in np_state.items()}
-        self.load_state_dict(state)
+        state = orca.load_tensors(filepath)
+        
+        # Apply the loaded tensors directly to the parameters
+        def _apply_params(mod, prefix=''):
+            for n, p in mod._parameters.items():
+                key = prefix + n
+                if key in state:
+                    p.tensor = state[key]
+            for n, b in mod._buffers.items():
+                key = prefix + n
+                if key in state:
+                    if isinstance(b, orca.Tensor):
+                        mod._buffers[n] = state[key]
+            for n, m in mod._modules.items():
+                _apply_params(m, prefix + n + '.')
+                
+        _apply_params(self)

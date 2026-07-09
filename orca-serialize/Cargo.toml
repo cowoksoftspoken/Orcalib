@@ -1,0 +1,13 @@
+[package]
+name = "orca-serialize"
+version = "0.1.0"
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[dependencies]
+orca-core = { path = "../orca-core" }
+orca-tensor = { path = "../orca-tensor" }
+safetensors = "0.4"

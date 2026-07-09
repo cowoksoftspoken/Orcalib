@@ -69,8 +69,6 @@ class Softmax(Module):
         self.dim = dim
 
     def forward(self, x: Tensor) -> Tensor:
-        exp_x = x.exp()
-        
         shape = list(x.shape)
         # handle negative dims
         dim = self.dim
@@ -78,6 +76,11 @@ class Softmax(Module):
             dim += len(shape)
             
         shape[dim] = 1
+        
+        # Numerically stable softmax: shift by max
+        max_x = x.max_to_shape(shape)
+        shifted_x = x - max_x
+        exp_x = shifted_x.exp()
         sum_x = exp_x.sum_to_shape(shape)
         
         return exp_x / sum_x
