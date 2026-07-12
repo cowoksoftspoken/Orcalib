@@ -1,10 +1,21 @@
 import orca
 import math
+from typing import Optional
 from .module import Module
 from .linear import Linear
 from .dropout import Dropout
+from .activation import Softmax
 
 class MultiHeadAttention(Module):
+    """
+    Allows the model to jointly attend to information from different representation
+    subspaces as described in the paper: Attention Is All You Need.
+    
+    Args:
+        embed_dim (int): Total dimension of the model.
+        num_heads (int): Number of parallel attention heads. Note that `embed_dim` must be divisible by `num_heads`.
+        dropout (float, optional): Dropout probability on the attention weights. Default: 0.0.
+    """
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0):
         super().__init__()
         self.embed_dim = embed_dim
@@ -21,8 +32,22 @@ class MultiHeadAttention(Module):
         self.out_proj = Linear(embed_dim, embed_dim, bias=True)
         
         self.dropout = Dropout(dropout)
+        self.softmax = Softmax(dim=-1)
 
-    def forward(self, query: orca.Tensor, key: orca.Tensor, value: orca.Tensor, attn_mask: orca.Tensor = None):
+    def forward(self, query: orca.Tensor, key: orca.Tensor, value: orca.Tensor, attn_mask: Optional[orca.Tensor] = None) -> orca.Tensor:
+        """
+        Forward pass for MultiHeadAttention.
+        
+        Args:
+            query (Tensor): Query tensor of shape `(batch_size, seq_len, embed_dim)`.
+            key (Tensor): Key tensor of shape `(batch_size, seq_len, embed_dim)`.
+            value (Tensor): Value tensor of shape `(batch_size, seq_len, embed_dim)`.
+            attn_mask (Optional[Tensor], optional): Attention mask. Used for causal or padding masks.
+                Contains 0.0 for unmasked and -1e9 for masked positions.
+                
+        Returns:
+            Tensor: Output tensor of shape `(batch_size, seq_len, embed_dim)`.
+        """
         # query, key, value shape: [batch_size, seq_len, embed_dim]
         batch_size = query.shape[0]
         q_len = query.shape[1]
@@ -50,20 +75,15 @@ class MultiHeadAttention(Module):
         attn_weights = orca.einsum("bhqd,bhkd->bhqk", q, k)
         
         # Scale
-        # Use multiplication with inverse scalar since scalar multiplication is supported
         scale_factor = 1.0 / math.sqrt(self.head_dim)
         attn_weights = attn_weights * scale_factor
         
         if attn_mask is not None:
             # Mask should be broadcastable to [batch_size, num_heads, q_len, k_len]
-            # Usually contains 0.0 for unmasked and -1e9 for masked positions.
             attn_weights = attn_weights + attn_mask
             
-        attn_probs = attn_weights.exp() # simplified softmax
-        sum_shape = list(attn_probs.shape)
-        sum_shape[-1] = 1
-        sum_probs = attn_probs.sum_to_shape(sum_shape)
-        attn_probs = attn_probs / sum_probs
+        # Numerically stable softmax
+        attn_probs = self.softmax(attn_weights)
         
         attn_probs = self.dropout(attn_probs)
         

@@ -755,6 +755,14 @@ impl PyTensor {
         dispatch_val!(self, t, t.storage().node_id.is_some())
     }
 
+    fn require_grad(&mut self) -> PyResult<()> {
+        match &mut self.0 {
+            PyTensorInner::Cpu(t) => t.require_grad(),
+            PyTensorInner::Gpu(t) => t.require_grad(),
+        }
+        Ok(())
+    }
+
     fn zero_grad(&self) -> PyResult<()> {
         dispatch_val!(
             self,
@@ -776,31 +784,30 @@ impl PyTensor {
     fn grad(&self) -> PyResult<Option<Self>> {
         match &self.0 {
             PyTensorInner::Cpu(t) => {
-                if let Some(grad_tensor) = t.grad() {
-                    let vec = grad_tensor
-                        .to_f32_vec()
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    let shape = grad_tensor.shape().to_vec();
-                    let new_tensor = Tensor::from_f32_slice(global_backend_cpu(), &vec, shape)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    Ok(Some(PyTensor(PyTensorInner::Cpu(new_tensor))))
-                } else {
-                    Ok(None)
-                }
+                Ok(t.grad().map(|grad_tensor| PyTensor(PyTensorInner::Cpu(grad_tensor))))
             }
             PyTensorInner::Gpu(t) => {
-                if let Some(grad_tensor) = t.grad() {
-                    let vec = grad_tensor
-                        .to_f32_vec()
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    let shape = grad_tensor.shape().to_vec();
-                    let new_tensor = Tensor::from_f32_slice(global_backend_gpu(), &vec, shape)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    Ok(Some(PyTensor(PyTensorInner::Gpu(new_tensor))))
-                } else {
-                    Ok(None)
-                }
+                Ok(t.grad().map(|grad_tensor| PyTensor(PyTensorInner::Gpu(grad_tensor))))
             }
+        }
+    }
+    
+    fn detach(&self) -> PyResult<Self> {
+        match &self.0 {
+            PyTensorInner::Cpu(t) => Ok(PyTensor(PyTensorInner::Cpu(t.detach()))),
+            PyTensorInner::Gpu(t) => Ok(PyTensor(PyTensorInner::Gpu(t.detach()))),
+        }
+    }
+
+    fn set_grad(&self, grad: &Self) -> PyResult<()> {
+        match (&self.0, &grad.0) {
+            (PyTensorInner::Cpu(t), PyTensorInner::Cpu(g)) => {
+                t.set_grad(g).map_err(|e| PyValueError::new_err(e.to_string()))
+            }
+            (PyTensorInner::Gpu(t), PyTensorInner::Gpu(g)) => {
+                t.set_grad(g).map_err(|e| PyValueError::new_err(e.to_string()))
+            }
+            _ => Err(PyValueError::new_err("Cannot set_grad across different devices")),
         }
     }
 }
@@ -817,9 +824,15 @@ fn save_tensors(path: &str, tensors_dict: &Bound<'_, pyo3::types::PyDict>) -> Py
                 hm.insert(key_str, inner);
             }
             PyTensorInner::Gpu(_) => {
-                return Err(PyRuntimeError::new_err(
-                    "Saving GPU tensors not fully supported yet",
-                ));
+                let cpu_tensor = py_tensor.to("cpu")?;
+                if let PyTensorInner::Cpu(t) = cpu_tensor.0 {
+                    let inner = t.primal();
+                    hm.insert(key_str, inner);
+                } else {
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                        "Failed to convert GPU tensor to CPU",
+                    ));
+                }
             }
         }
     }

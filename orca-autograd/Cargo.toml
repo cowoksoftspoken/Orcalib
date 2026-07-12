@@ -10,3 +10,7 @@ description = "Tape-based automatic differentiation for the Orca framework"
 [dependencies]
 orca-core = { path = "../orca-core" }
 orca-tensor = { path = "../orca-tensor" }
+
+[dev-dependencies]
+orca-backend-cpu = { path = "../orca-backend-cpu" }
+bytemuck = "1.15.0"

@@ -35,9 +35,14 @@ impl GpuStorage {
             element_size,
         }
     }
-    
+    /// Returns the underlying wgpu buffer.
+    ///
+    /// # Safety Invariant  
+    /// Buffer is always `Some` after construction — `PooledBuffer::drop` is the
+    /// only consumer, and it runs after all references are gone.
     pub fn buffer(&self) -> &wgpu::Buffer {
-        self.inner.buffer.as_ref().unwrap()
+        self.inner.buffer.as_ref()
+            .expect("BUG: GpuStorage buffer was None — this should never happen")
     }
 }
 

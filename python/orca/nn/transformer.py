@@ -1,4 +1,5 @@
 import orca
+from typing import Optional
 from .module import Module
 from .linear import Linear
 from .dropout import Dropout
@@ -7,6 +8,19 @@ from .attention import MultiHeadAttention
 from .activation import GELU
 
 class TransformerEncoderLayer(Module):
+    """
+    TransformerEncoderLayer is made up of self-attn and feedforward network.
+    
+    This standard encoder layer is based on the paper "Attention Is All You Need".
+    It uses a Pre-LN (Pre-Layer Normalization) architecture which is typical for 
+    more stable training in modern Transformers (like GPT/BERT variants).
+    
+    Args:
+        embed_dim (int): the number of expected features in the input (required).
+        num_heads (int): the number of heads in the multiheadattention models (required).
+        dim_feedforward (int, optional): the dimension of the feedforward network model. Default: 2048.
+        dropout (float, optional): the dropout value. Default: 0.1.
+    """
     def __init__(self, embed_dim: int, num_heads: int, dim_feedforward: int = 2048, dropout: float = 0.1):
         super().__init__()
         self.self_attn = MultiHeadAttention(embed_dim, num_heads, dropout=dropout)
@@ -23,7 +37,17 @@ class TransformerEncoderLayer(Module):
         # Simplified GELU for standard transformer MLP
         self.activation = GELU()
 
-    def forward(self, src: orca.Tensor, src_mask: orca.Tensor = None):
+    def forward(self, src: orca.Tensor, src_mask: Optional[orca.Tensor] = None) -> orca.Tensor:
+        """
+        Pass the input through the encoder layer.
+        
+        Args:
+            src (Tensor): the sequence to the encoder layer of shape `(batch, seq_len, embed_dim)`.
+            src_mask (Optional[Tensor], optional): the mask for the src sequence. Default: None.
+                
+        Returns:
+            Tensor: Output tensor of shape `(batch, seq_len, embed_dim)`.
+        """
         # Pre-LN architecture (typically more stable)
         # Self-attention block
         src_norm = self.norm1(src)
@@ -39,11 +63,22 @@ class TransformerEncoderLayer(Module):
 
 class TransformerBlock(TransformerEncoderLayer):
     """
-    Alias for TransformerEncoderLayer since standard GPT/BERT just use repeated blocks of this.
+    Alias for `TransformerEncoderLayer`. 
+    
+    Standard GPT and BERT models are constructed by stacking multiple instances of this block.
     """
     pass
 
 class TransformerDecoderLayer(Module):
+    """
+    TransformerDecoderLayer is made up of self-attn, multi-head-attn and feedforward network.
+    
+    Args:
+        embed_dim (int): the number of expected features in the input (required).
+        num_heads (int): the number of heads in the multiheadattention models (required).
+        dim_feedforward (int, optional): the dimension of the feedforward network model. Default: 2048.
+        dropout (float, optional): the dropout value. Default: 0.1.
+    """
     def __init__(self, embed_dim: int, num_heads: int, dim_feedforward: int = 2048, dropout: float = 0.1):
         super().__init__()
         self.self_attn = MultiHeadAttention(embed_dim, num_heads, dropout=dropout)
@@ -62,7 +97,19 @@ class TransformerDecoderLayer(Module):
         
         self.activation = GELU()
 
-    def forward(self, tgt: orca.Tensor, memory: orca.Tensor, tgt_mask: orca.Tensor = None, memory_mask: orca.Tensor = None):
+    def forward(self, tgt: orca.Tensor, memory: orca.Tensor, tgt_mask: Optional[orca.Tensor] = None, memory_mask: Optional[orca.Tensor] = None) -> orca.Tensor:
+        """
+        Pass the inputs (and mask) through the decoder layer.
+        
+        Args:
+            tgt (Tensor): the sequence to the decoder layer (target).
+            memory (Tensor): the sequence from the last layer of the encoder.
+            tgt_mask (Optional[Tensor], optional): the mask for the tgt sequence. Default: None.
+            memory_mask (Optional[Tensor], optional): the mask for the memory sequence. Default: None.
+            
+        Returns:
+            Tensor: Output tensor.
+        """
         # Pre-LN architecture
         tgt_norm = self.norm1(tgt)
         attn_out = self.self_attn(tgt_norm, tgt_norm, tgt_norm, attn_mask=tgt_mask)

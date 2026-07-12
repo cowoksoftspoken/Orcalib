@@ -1,8 +1,20 @@
 import orca
+from typing import Iterable, Tuple
 from .optimizer import Optimizer
+from orca.nn.parameter import Parameter
 
 class AdamW(Optimizer):
-    def __init__(self, parameters, lr=0.001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01):
+    """
+    Implements AdamW algorithm (Adam with decoupled weight decay).
+    
+    Args:
+        parameters (Iterable[Parameter]): iterable of parameters to optimize.
+        lr (float, optional): learning rate. Default: 0.001.
+        betas (Tuple[float, float], optional): coefficients used for computing running averages of gradient and its square. Default: (0.9, 0.999).
+        eps (float, optional): term added to the denominator to improve numerical stability. Default: 1e-8.
+        weight_decay (float, optional): weight decay coefficient (decoupled). Default: 0.01.
+    """
+    def __init__(self, parameters: Iterable[Parameter], lr: float = 0.001, betas: Tuple[float, float] = (0.9, 0.999), eps: float = 1e-8, weight_decay: float = 0.01):
         super().__init__(parameters)
         self.lr = lr
         self.beta1, self.beta2 = betas
@@ -19,7 +31,10 @@ class AdamW(Optimizer):
             self.m.append(orca.Tensor.zeros(shape, device=device))
             self.v.append(orca.Tensor.zeros(shape, device=device))
 
-    def step(self):
+    def step(self) -> None:
+        """
+        Performs a single optimization step.
+        """
         self.t += 1
         
         for i, p in enumerate(self.parameters):
@@ -30,9 +45,8 @@ class AdamW(Optimizer):
                 
                 device = p.tensor.device
                 
-                # Perform stepweight decay
-                # p_t = p_{t-1} - lr * weight_decay * p_{t-1}
-                decayed_tensor = p.tensor - p.tensor * (self.lr * self.weight_decay)
+                # Decoupled weight decay: p = p * (1 - lr * weight_decay)
+                decayed_tensor = p.tensor * (1.0 - self.lr * self.weight_decay)
                 
                 # m_t = beta1 * m_{t-1} + (1 - beta1) * g_t
                 m_prev = self.m[i]
@@ -56,6 +70,7 @@ class AdamW(Optimizer):
                 update = (m_hat / denom) * self.lr
                 new_tensor = decayed_tensor - update
                 
-                # Preserve requires_grad manually by recreating or using update logic
-                p_new = orca.Tensor.from_list(new_tensor.to_list(), shape=new_tensor.shape, requires_grad=True, device=device)
+                # Detach from graph and re-enable gradient tracking (zero-copy)
+                p_new = new_tensor.detach()
+                p_new.require_grad()
                 p.update(p_new)

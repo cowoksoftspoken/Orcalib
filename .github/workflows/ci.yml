@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  rust:
+    name: Rust Checks & Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Cargo Format
+        run: cargo fmt --all -- --check
+      - name: Cargo Test
+        run: cargo test --workspace
+
+  python:
+    name: Python Checks & Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin pytest numpy scikit-learn wgpu
+      - name: Build and Install Crate
+        run: maturin develop
+      - name: Run Pytest
+        run: pytest python/tests

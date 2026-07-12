@@ -31,13 +31,14 @@ impl<B: Backend> Gradients<B> {
     }
 
     /// Insert or accumulate a gradient for a given node.
-    pub fn accumulate(&mut self, id: NodeId, grad: B::Storage, backend: &B) {
+    pub fn accumulate(&mut self, id: NodeId, grad: B::Storage, backend: &B) -> orca_core::Result<()> {
         if let Some(existing) = self.grads.get(&id) {
-            let sum = backend.accumulate_grad(existing, &grad).unwrap();
+            let sum = backend.accumulate_grad(existing, &grad)?;
             self.grads.insert(id, sum);
         } else {
             self.grads.insert(id, grad);
         }
+        Ok(())
     }
 
     pub fn consume(self) -> HashMap<NodeId, B::Storage> {
@@ -47,7 +48,7 @@ impl<B: Backend> Gradients<B> {
 
 /// A trait for operations that can compute their own backward pass.
 pub trait BackwardOp<B: Backend>: Send + Sync + Debug {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B);
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()>;
 }
 
 /// The Wengert List (Tape) that records operations.
@@ -88,14 +89,20 @@ impl<B: Backend> Tape<B> {
         NodeId(id)
     }
 
-    pub fn execute_backward(&mut self, root_id: NodeId, root_grad: B::Storage, backend: &B) {
+    pub fn execute_backward(&mut self, root_id: NodeId, root_grad: B::Storage, backend: &B) -> orca_core::Result<()> {
         self.grads.grads.insert(root_id, root_grad);
         for op in self.nodes.iter().rev() {
-            op.backward(&mut self.grads, backend);
+            op.backward(&mut self.grads, backend)?;
         }
+        Ok(())
     }
 
     pub fn get_grad(&self, id: NodeId) -> Option<&B::Storage> {
         self.grads.get(id)
+    }
+
+    /// Overwrites the gradient stored for a given node.
+    pub fn set_grad(&mut self, id: NodeId, grad: B::Storage) {
+        self.grads.grads.insert(id, grad);
     }
 }

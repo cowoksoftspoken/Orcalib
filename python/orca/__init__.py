@@ -5,5 +5,5 @@ from . import nn
 from . import optim
 from . import data
 
-__version__ = "1.0.0"
+__version__ = "0.5.0"
 __all__ = ["Tensor", "DType", "Device", "save_tensors", "load_tensors", "einsum", "autocast", "GradScaler", "nn", "optim", "data"]

@@ -6,3 +6,4 @@ pub mod tensor;
 
 pub use backend::{Autodiff, AutodiffStorage};
 pub use tape::{Tape, NodeId};
+pub use tensor::AutogradTensorExt;

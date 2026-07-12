@@ -32,6 +32,13 @@ pub struct Pipelines {
     pub conv2d_bw_input: wgpu::ComputePipeline,
     pub conv2d_bw_weight: wgpu::ComputePipeline,
     pub conv2d_bw_bias: wgpu::ComputePipeline,
+    pub check_nan_inf: wgpu::ComputePipeline,
+    pub gather: wgpu::ComputePipeline,
+    pub scatter: wgpu::ComputePipeline,
+    pub scatter_bw_base: wgpu::ComputePipeline,
+    pub gather_bw: wgpu::ComputePipeline,
+    pub max_to_shape: wgpu::ComputePipeline,
+    pub max_to_shape_bw: wgpu::ComputePipeline,
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +122,34 @@ impl GpuBackend {
                 label: Some("conv2d_bw"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("shaders/conv2d_bw.wgsl").into()),
             });
+            let check_nan_inf_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("check_nan_inf"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/check_nan_inf.wgsl").into()),
+            });
+            let gather_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("gather"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/gather.wgsl").into()),
+            });
+            let scatter_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("scatter"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scatter.wgsl").into()),
+            });
+            let scatter_bw_base_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("scatter_bw_base"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scatter_backward_base.wgsl").into()),
+            });
+            let gather_bw_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("gather_bw"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/gather_backward.wgsl").into()),
+            });
+            let max_to_shape_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("max_to_shape"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/reduce_max.wgsl").into()),
+            });
+            let max_to_shape_bw_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("max_to_shape_bw"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/reduce_max_backward.wgsl").into()),
+            });
 
             let create_pipeline = |shader: &wgpu::ShaderModule, entry: &str| {
                 device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -149,6 +184,13 @@ impl GpuBackend {
                 conv2d_bw_input: create_pipeline(&conv2d_bw_shader, "backward_input_main"),
                 conv2d_bw_weight: create_pipeline(&conv2d_bw_shader, "backward_weight_main"),
                 conv2d_bw_bias: create_pipeline(&conv2d_bw_shader, "backward_bias_main"),
+                check_nan_inf: create_pipeline(&check_nan_inf_shader, "check_main"),
+                gather: create_pipeline(&gather_shader, "gather_main"),
+                scatter: create_pipeline(&scatter_shader, "scatter_main"),
+                scatter_bw_base: create_pipeline(&scatter_bw_base_shader, "scatter_bw_base_main"),
+                gather_bw: create_pipeline(&gather_bw_shader, "gather_bw_main"),
+                max_to_shape: create_pipeline(&max_to_shape_shader, "max_to_shape_main"),
+                max_to_shape_bw: create_pipeline(&max_to_shape_bw_shader, "max_to_shape_bw_main"),
             };
 
             Self {
@@ -270,7 +312,7 @@ impl Backend for GpuBackend {
 
         let slice = staging.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+        slice.map_async(wgpu::MapMode::Read, move |v| { let _ = sender.send(v); });
         self.device.poll(wgpu::Maintain::Wait);
         
         if let Ok(Ok(())) = receiver.recv() {
@@ -541,7 +583,7 @@ impl Backend for GpuBackend {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.clear_buffer(&grad_bias, 0, None);
 
-        let mut uniforms = [0u32; 12];
+        let mut uniforms = [0u32; 16];
         uniforms[0] = n; uniforms[4] = c_out; uniforms[7] = h_out; uniforms[8] = w_out;
 
         let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -605,19 +647,35 @@ impl Backend for GpuBackend {
     }
 
     fn matmul(&self, lhs: &Self::Storage, rhs: &Self::Storage, lhs_shape: &Shape, rhs_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
-        let m = lhs_shape[0] as u32;
-        let k = lhs_shape[1] as u32;
-        let n = rhs_shape[1] as u32;
+        let lhs_rank = lhs_shape.rank();
+        let rhs_rank = rhs_shape.rank();
+        
+        if lhs_rank < 2 || rhs_rank < 2 {
+            return Err(OrcaError::InternalError("Matmul requires at least 2D shapes".into()));
+        }
 
-        let num_elements = (m * n) as usize;
+        let m = lhs_shape[lhs_rank - 2] as u32;
+        let k = lhs_shape[lhs_rank - 1] as u32;
+        let n = rhs_shape[rhs_rank - 1] as u32;
+
+        let mut batch_size = 1;
+        for i in 0..lhs_rank - 2 {
+            if lhs_shape[i] != rhs_shape[i] {
+                return Err(OrcaError::InternalError("Matmul batch dimensions must match".into()));
+            }
+            batch_size *= lhs_shape[i];
+        }
+        let b = batch_size as u32;
+
+        let num_elements = (b * m * n) as usize;
         let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None, size: (num_elements * 4) as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // uniforms: M, K, N, padding
-        let uniforms: [u32; 4] = [m, k, n, 0];
+        // uniforms: M, K, N, B
+        let uniforms: [u32; 4] = [m, k, n, b];
         let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("matmul_uniforms"),
             contents: bytemuck::cast_slice(&uniforms),
@@ -640,7 +698,7 @@ impl Backend for GpuBackend {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cpass.set_pipeline(&self.pipelines.matmul);
             cpass.set_bind_group(0, &bind_group, &[]);
-            cpass.dispatch_workgroups((n as f32 / 16.0).ceil() as u32, (m as f32 / 16.0).ceil() as u32, 1);
+            cpass.dispatch_workgroups((n as f32 / 16.0).ceil() as u32, (m as f32 / 16.0).ceil() as u32, b);
         }
         self.queue.submit(Some(encoder.finish()));
         Ok(GpuStorage::new(out_buffer, num_elements, 4))
@@ -651,17 +709,44 @@ impl Backend for GpuBackend {
     }
 
     fn transpose(&self, storage: &Self::Storage, shape: &Shape, dim0: usize, dim1: usize, dtype: DType) -> Result<Self::Storage> {
-        let rows = shape[0] as u32;
-        let cols = shape[1] as u32;
-        let num_elements = (rows * cols) as usize;
+        let rank = shape.rank();
+        if dim0 >= rank || dim1 >= rank {
+            return Err(OrcaError::InternalError("Invalid transpose dimensions".into()));
+        }
 
+        let num_elements = shape.num_elements();
         let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("transpose_out"), size: (num_elements * 4) as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let uniforms: [u32; 2] = [rows, cols];
+        let mut out_shape_vec = shape.to_vec();
+        out_shape_vec.swap(dim0, dim1);
+        let out_shape = Shape::new(out_shape_vec);
+
+        // Pad shape to rank 4 to match transpose.wgsl expectation
+        let padded_in = CpuBackend::pad_shape_left(&shape.0, 4);
+        let in_strides = CpuBackend::compute_strides(&padded_in);
+        let padded_out = CpuBackend::pad_shape_left(&out_shape.0, 4);
+        let out_strides = CpuBackend::compute_strides(&padded_out);
+
+        // Map dim0 and dim1 to their padded indices (left-padded to 4)
+        let pad_offset = 4 - rank.min(4);
+        let padded_dim0 = dim0 + pad_offset;
+        let padded_dim1 = dim1 + pad_offset;
+
+        let mut uniforms = [0u32; 16]; // Correct layout for the Uniforms struct in transpose.wgsl
+        for i in 0..4 {
+            uniforms[i] = in_strides[i] as u32;         // in_strides
+            uniforms[4 + i] = out_strides[i] as u32;    // out_strides
+            uniforms[8 + i] = padded_out[i] as u32;     // out_shape
+        }
+        uniforms[12] = padded_dim0 as u32;
+        uniforms[13] = padded_dim1 as u32;
+        uniforms[14] = rank as u32;
+        uniforms[15] = num_elements as u32;
+
         let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("transpose_uniforms"),
             contents: bytemuck::cast_slice(&uniforms),
@@ -683,7 +768,8 @@ impl Backend for GpuBackend {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cpass.set_pipeline(&self.pipelines.transpose);
             cpass.set_bind_group(0, &bind_group, &[]);
-            cpass.dispatch_workgroups((cols as f32 / 16.0).ceil() as u32, (rows as f32 / 16.0).ceil() as u32, 1);
+            let workgroups = ((num_elements as f32) / 256.0).ceil() as u32;
+            cpass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(Some(encoder.finish()));
         Ok(GpuStorage::new(out_buffer, num_elements, 4))
@@ -697,7 +783,7 @@ impl Backend for GpuBackend {
             mapped_at_creation: false,
         });
 
-        let rank = in_shape.rank();
+        let rank = out_shape.rank();
         let padded_in = CpuBackend::pad_shape_left(&in_shape.0, rank);
         let in_strides = CpuBackend::compute_strides(&padded_in);
         let out_strides = CpuBackend::compute_strides(&out_shape.0);
@@ -807,43 +893,413 @@ impl Backend for GpuBackend {
 
     // Phase 2.1 Indexing
     fn scatter(&self, storage: &Self::Storage, dim: usize, index: &Self::Storage, src: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
-        unimplemented!("GPU scatter not implemented yet")
+        let num_elements = index_shape.num_elements();
+        
+        // Output starts as a copy of the base tensor (storage)
+        let out_size = (shape.num_elements() * 4) as wgpu::BufferAddress;
+        let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scatter_out"), size: out_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(storage.buffer(), 0, &out_buffer, 0, out_size);
+        
+        let rank = shape.rank();
+        let mut out_strides_pad = [0u32; 4];
+        let mut idx_strides_pad = [0u32; 4];
+        let out_strides = CpuBackend::compute_strides(&shape.0);
+        let idx_strides = CpuBackend::compute_strides(&index_shape.0);
+        for i in 0..rank {
+            out_strides_pad[i] = out_strides[i] as u32;
+            idx_strides_pad[i] = idx_strides[i] as u32;
+        }
+
+        let mut uniforms = [0u32; 12];
+        uniforms[0] = dim as u32;
+        uniforms[1] = rank as u32;
+        uniforms[2] = num_elements as u32;
+        uniforms[4] = out_strides_pad[0]; uniforms[5] = out_strides_pad[1];
+        uniforms[6] = out_strides_pad[2]; uniforms[7] = out_strides_pad[3];
+        uniforms[8] = idx_strides_pad[0]; uniforms[9] = idx_strides_pad[1];
+        uniforms[10] = idx_strides_pad[2]; uniforms[11] = idx_strides_pad[3];
+
+        let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("scatter_uniforms"), contents: bytemuck::cast_slice(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.pipelines.scatter.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: src.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: index.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: out_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: uniform_buf.as_entire_binding() },
+            ],
+        });
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cpass.set_pipeline(&self.pipelines.scatter);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch_workgroups(((num_elements as f32) / 64.0).ceil() as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(GpuStorage::new(out_buffer, shape.num_elements(), 4))
     }
     
     fn gather(&self, storage: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
-        unimplemented!("GPU gather not implemented yet")
+        let num_elements = index_shape.num_elements();
+        let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gather_out"), size: (num_elements * 4) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        
+        let rank = shape.rank();
+        let mut in_strides_pad = [0u32; 4];
+        let mut idx_strides_pad = [0u32; 4];
+        let in_strides = CpuBackend::compute_strides(&shape.0);
+        let idx_strides = CpuBackend::compute_strides(&index_shape.0);
+        for i in 0..rank {
+            in_strides_pad[i] = in_strides[i] as u32;
+            idx_strides_pad[i] = idx_strides[i] as u32;
+        }
+
+        let mut uniforms = [0u32; 12];
+        uniforms[0] = dim as u32;
+        uniforms[1] = rank as u32;
+        uniforms[2] = num_elements as u32;
+        uniforms[4] = in_strides_pad[0]; uniforms[5] = in_strides_pad[1];
+        uniforms[6] = in_strides_pad[2]; uniforms[7] = in_strides_pad[3];
+        uniforms[8] = idx_strides_pad[0]; uniforms[9] = idx_strides_pad[1];
+        uniforms[10] = idx_strides_pad[2]; uniforms[11] = idx_strides_pad[3];
+
+        let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gather_uniforms"), contents: bytemuck::cast_slice(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.pipelines.gather.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: index.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: out_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: uniform_buf.as_entire_binding() },
+            ],
+        });
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cpass.set_pipeline(&self.pipelines.gather);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch_workgroups(((num_elements as f32) / 64.0).ceil() as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(GpuStorage::new(out_buffer, num_elements, 4))
     }
     
     fn scatter_backward_src(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
-        unimplemented!("GPU scatter_backward_src not implemented yet")
+        self.gather(grad_out, dim, index, shape, index_shape, dtype)
     }
     
     fn scatter_backward_base(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
-        unimplemented!("GPU scatter_backward_base not implemented yet")
+        let num_elements = index_shape.num_elements();
+        
+        let out_size = (shape.num_elements() * 4) as wgpu::BufferAddress;
+        let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scatter_bw_base_out"), size: out_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        // copy grad_out to out_buffer
+        encoder.copy_buffer_to_buffer(grad_out.buffer(), 0, &out_buffer, 0, out_size);
+        
+        let rank = shape.rank();
+        let mut out_strides_pad = [0u32; 4];
+        let mut idx_strides_pad = [0u32; 4];
+        let out_strides = CpuBackend::compute_strides(&shape.0);
+        let idx_strides = CpuBackend::compute_strides(&index_shape.0);
+        for i in 0..rank {
+            out_strides_pad[i] = out_strides[i] as u32;
+            idx_strides_pad[i] = idx_strides[i] as u32;
+        }
+
+        let mut uniforms = [0u32; 12];
+        uniforms[0] = dim as u32;
+        uniforms[1] = rank as u32;
+        uniforms[2] = num_elements as u32;
+        uniforms[4] = out_strides_pad[0]; uniforms[5] = out_strides_pad[1];
+        uniforms[6] = out_strides_pad[2]; uniforms[7] = out_strides_pad[3];
+        uniforms[8] = idx_strides_pad[0]; uniforms[9] = idx_strides_pad[1];
+        uniforms[10] = idx_strides_pad[2]; uniforms[11] = idx_strides_pad[3];
+
+        let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("scatter_bw_base_uniforms"), contents: bytemuck::cast_slice(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.pipelines.scatter_bw_base.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: index.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: uniform_buf.as_entire_binding() },
+            ],
+        });
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cpass.set_pipeline(&self.pipelines.scatter_bw_base);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch_workgroups(((num_elements as f32) / 64.0).ceil() as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(GpuStorage::new(out_buffer, shape.num_elements(), 4))
     }
 
     fn gather_backward(&self, grad_out: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
-        unimplemented!("Phase 2.1 Indexing Backward not implemented for WgpuBackend yet");
+        let in_elements = shape.num_elements();
+        let idx_dim_size = index_shape[dim];
+        let out_size = (in_elements * 4) as wgpu::BufferAddress;
+        let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gather_bw_out"), size: out_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        // grad_in is initialized directly in the shader, but we can clear it just to be safe
+        encoder.clear_buffer(&out_buffer, 0, None);
+        
+        let rank = shape.rank();
+        let mut in_strides_pad = [0u32; 4];
+        let mut idx_strides_pad = [0u32; 4];
+        let in_strides = CpuBackend::compute_strides(&shape.0);
+        let idx_strides = CpuBackend::compute_strides(&index_shape.0);
+        
+        for i in 0..rank {
+            in_strides_pad[i] = in_strides[i] as u32;
+            idx_strides_pad[i] = idx_strides[i] as u32;
+        }
+
+        let mut uniforms = [0u32; 12];
+        uniforms[0] = dim as u32;
+        uniforms[1] = rank as u32;
+        uniforms[2] = in_elements as u32;
+        uniforms[3] = idx_dim_size as u32;
+        uniforms[4] = idx_strides_pad[0]; uniforms[5] = idx_strides_pad[1];
+        uniforms[6] = idx_strides_pad[2]; uniforms[7] = idx_strides_pad[3];
+        uniforms[8] = in_strides_pad[0]; uniforms[9] = in_strides_pad[1];
+        uniforms[10] = in_strides_pad[2]; uniforms[11] = in_strides_pad[3];
+
+        let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gather_bw_uniforms"), contents: bytemuck::cast_slice(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.pipelines.gather_bw.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: grad_out.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: index.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: out_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: uniform_buf.as_entire_binding() },
+            ],
+        });
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cpass.set_pipeline(&self.pipelines.gather_bw);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch_workgroups(((in_elements as f32) / 64.0).ceil() as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(GpuStorage::new(out_buffer, shape.num_elements(), 4))
     }
 
     // Phase 1-2 Production Hardening
-    fn from_bytes(&self, _shape: &Shape, _bytes: &[u8], _dtype: DType) -> Result<Self::Storage> {
-        unimplemented!("from_bytes not implemented for WgpuBackend yet");
+    fn from_bytes(&self, shape: &Shape, bytes: &[u8], dtype: DType) -> Result<Self::Storage> {
+        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("from_bytes"),
+            contents: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        });
+        Ok(GpuStorage::new(buffer, shape.num_elements(), dtype.element_size()))
     }
 
-    fn to_bytes(&self, _storage: &Self::Storage) -> Result<Vec<u8>> {
-        unimplemented!("to_bytes not implemented for WgpuBackend yet");
+    fn to_bytes(&self, storage: &Self::Storage) -> Result<Vec<u8>> {
+        let size = (storage.num_elements * storage.element_size) as wgpu::BufferAddress;
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_bytes"), size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(&storage.buffer(), 0, &staging, 0, size);
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = staging.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |v| { let _ = sender.send(v); });
+        self.device.poll(wgpu::Maintain::Wait);
+        
+        if let Ok(Ok(())) = receiver.recv() {
+            let data = slice.get_mapped_range();
+            let result = data.to_vec();
+            drop(data);
+            staging.unmap();
+            Ok(result)
+        } else {
+            Err(OrcaError::InternalError("Failed to map GPU buffer for to_bytes".to_string()))
+        }
     }
 
-    fn has_nan_or_inf(&self, _storage: &Self::Storage, _dtype: DType) -> Result<bool> {
-        unimplemented!("has_nan_or_inf not implemented for WgpuBackend yet");
+    fn has_nan_or_inf(&self, storage: &Self::Storage, _dtype: DType) -> Result<bool> {
+        let num_elements = storage.num_elements;
+        
+        let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("has_nan_or_inf_out"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.clear_buffer(&out_buffer, 0, None);
+
+        let bind_group_layout = self.pipelines.check_nan_inf.get_bind_group_layout(0);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out_buffer.as_entire_binding() },
+            ],
+        });
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cpass.set_pipeline(&self.pipelines.check_nan_inf);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch_workgroups(((num_elements as f32) / 256.0).ceil() as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+
+        // read back the 4 bytes using to_bytes trick
+        let tmp_storage = GpuStorage::new(out_buffer, 1, 4);
+        let bytes = self.to_bytes(&tmp_storage)?;
+        let val = u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        
+        Ok(val > 0)
     }
 
-    fn max_to_shape(&self, _storage: &Self::Storage, _in_shape: &Shape, _out_shape: &Shape, _dtype: DType) -> Result<Self::Storage> {
-        unimplemented!("max_to_shape not implemented for WgpuBackend yet");
+    fn max_to_shape(&self, storage: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let num_elements = out_shape.num_elements();
+        
+        let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("max_to_shape_out"), size: (num_elements * 4) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let rank = in_shape.rank();
+        let padded_out = CpuBackend::pad_shape_left(&out_shape.0, rank);
+        let in_strides = CpuBackend::compute_strides(&in_shape.0);
+        let out_strides = CpuBackend::compute_strides(&padded_out);
+
+        let mut uniforms = [0u32; 20];
+        for i in 0..rank.min(4) {
+            uniforms[i] = in_strides[i] as u32;
+            uniforms[4 + i] = out_strides[i] as u32;
+            uniforms[8 + i] = in_shape.0[i] as u32;
+            uniforms[12 + i] = padded_out[i] as u32;
+        }
+        uniforms[16] = rank as u32;
+
+        let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("max_to_shape_uniforms"),
+            contents: bytemuck::cast_slice(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group_layout = self.pipelines.max_to_shape.get_bind_group_layout(0);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: storage.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: uniform_buf.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cpass.set_pipeline(&self.pipelines.max_to_shape);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch_workgroups(((num_elements as f32) / 64.0).ceil() as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(GpuStorage::new(out_buffer, num_elements, 4))
     }
 
-    fn max_to_shape_backward(&self, _grad_out: &Self::Storage, _in_primal: &Self::Storage, _out_primal: &Self::Storage, _in_shape: &Shape, _out_shape: &Shape, _dtype: DType) -> Result<Self::Storage> {
-        unimplemented!("max_to_shape_backward not implemented for WgpuBackend yet");
+    fn max_to_shape_backward(&self, grad_out: &Self::Storage, in_primal: &Self::Storage, out_primal: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let num_elements = in_shape.num_elements();
+        
+        let grad_in_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("max_to_shape_bw_in"), size: (num_elements * 4) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let rank = in_shape.rank();
+        let padded_out = CpuBackend::pad_shape_left(&out_shape.0, rank);
+        let in_strides = CpuBackend::compute_strides(&in_shape.0);
+        let out_strides = CpuBackend::compute_strides(&padded_out);
+
+        let mut uniforms = [0u32; 20];
+        for i in 0..rank.min(4) {
+            uniforms[i] = in_strides[i] as u32;
+            uniforms[4 + i] = out_strides[i] as u32;
+            uniforms[8 + i] = in_shape.0[i] as u32;
+            uniforms[12 + i] = padded_out[i] as u32;
+        }
+        uniforms[16] = rank as u32;
+
+        let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("max_to_shape_bw_uniforms"),
+            contents: bytemuck::cast_slice(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group_layout = self.pipelines.max_to_shape_bw.get_bind_group_layout(0);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: grad_out.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: in_primal.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: out_primal.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: grad_in_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: uniform_buf.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cpass.set_pipeline(&self.pipelines.max_to_shape_bw);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch_workgroups(((out_shape.num_elements() as f32) / 64.0).ceil() as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(GpuStorage::new(grad_in_buffer, num_elements, 4))
     }
 }

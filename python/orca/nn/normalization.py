@@ -29,19 +29,23 @@ class LayerNorm(Module):
         
         sum_x = x.sum_to_shape(reduced_shape)
         mean = sum_x * (1.0 / F)
+        mean_exp = mean.expand(shape)
         
-        diff = x - mean
+        diff = x - mean_exp
         squared = diff * diff
         
         sum_sq = squared.sum_to_shape(reduced_shape)
         var = sum_sq * (1.0 / F)
         
-        eps_tensor = _scalar(self.eps, x.device)
+        eps_tensor = _scalar(self.eps, x.device).expand(reduced_shape)
         var_eps = var + eps_tensor
-        std = var_eps.sqrt()
+        std = var_eps.sqrt().expand(shape)
         
         norm = diff / std
-        return (norm * self.weight.tensor) + self.bias.tensor
+        
+        weight_exp = self.weight.tensor.expand(shape)
+        bias_exp = self.bias.tensor.expand(shape)
+        return (norm * weight_exp) + bias_exp
 
 
 class BatchNorm2d(Module):
@@ -76,8 +80,9 @@ class BatchNorm2d(Module):
             
             sum_x = x.sum_to_shape(reduced_shape)
             mean = sum_x * (1.0 / num_elements)
+            mean_exp = mean.expand(shape)
             
-            diff = x - mean
+            diff = x - mean_exp
             squared = diff * diff
             sum_sq = squared.sum_to_shape(reduced_shape)
             
@@ -102,11 +107,20 @@ class BatchNorm2d(Module):
             self._buffers['running_var'] = (old_rv * (1.0 - self.momentum)) + (new_running_var * self.momentum)
             
             # Normalize and apply affine
-            eps_tensor = _scalar(self.eps, x.device)
-            norm = diff / (var + eps_tensor).sqrt()
-            return (norm * self.weight.tensor) + self.bias.tensor
+            eps_tensor = _scalar(self.eps, x.device).expand(reduced_shape)
+            std_exp = (var + eps_tensor).sqrt().expand(shape)
+            norm = diff / std_exp
+            weight_exp = self.weight.tensor.expand(shape)
+            bias_exp = self.bias.tensor.expand(shape)
+            return (norm * weight_exp) + bias_exp
         else:
             # Evaluation mode uses running stats
-            eps_tensor = _scalar(self.eps, x.device)
-            norm = (x - self._buffers['running_mean']) / (self._buffers['running_var'] + eps_tensor).sqrt()
-            return (norm * self.weight.tensor) + self.bias.tensor
+            reduced_shape = [1, self.num_features, 1, 1]
+            eps_tensor = _scalar(self.eps, x.device).expand(reduced_shape)
+            rm_exp = self._buffers['running_mean'].expand(shape)
+            rv_exp = self._buffers['running_var'] + eps_tensor
+            std_exp = rv_exp.sqrt().expand(shape)
+            norm = (x - rm_exp) / std_exp
+            weight_exp = self.weight.tensor.expand(shape)
+            bias_exp = self.bias.tensor.expand(shape)
+            return (norm * weight_exp) + bias_exp

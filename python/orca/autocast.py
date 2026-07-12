@@ -48,9 +48,9 @@ class GradScaler:
             
         # Check for inf/nan in gradients
         found_inf = False
-        for param in optimizer.params:
-            if param.grad is not None:
-                if param.grad.has_nan_or_inf():
+        for param in optimizer.parameters:
+            if param.tensor.grad() is not None:
+                if param.tensor.grad().has_nan_or_inf():
                     found_inf = True
                     break
                     

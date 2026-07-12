@@ -1,19 +1,24 @@
+from typing import Any, Dict, Iterator, Optional, Union
 from .parameter import Parameter
-import orca
 import orca
 from orca.tensor import Tensor
 
 class Module:
     """
     Base class for all neural network modules.
+    
+    Your models should also subclass this class.
+    
+    Modules can also contain other Modules, allowing to nest them in a tree structure.
+    You can assign the submodules as regular attributes.
     """
-    def __init__(self):
-        self._modules = {}
-        self._parameters = {}
-        self._buffers = {}
-        self.training = True
+    def __init__(self) -> None:
+        self._modules: Dict[str, 'Module'] = {}
+        self._parameters: Dict[str, Parameter] = {}
+        self._buffers: Dict[str, Any] = {}
+        self.training: bool = True
 
-    def __setattr__(self, name, value):
+    def __setattr__(self, name: str, value: Any) -> None:
         if isinstance(value, Parameter):
             if not hasattr(self, '_parameters'):
                 self._parameters = {}
@@ -24,9 +29,13 @@ class Module:
             self._modules[name] = value
         super().__setattr__(name, value)
 
-    def parameters(self):
+    def parameters(self) -> Iterator[Parameter]:
         """
         Returns an iterator over module parameters.
+        This is typically passed to an optimizer.
+        
+        Yields:
+            Parameter: module parameter
         """
         for name, param in self._parameters.items():
             yield param
@@ -34,14 +43,26 @@ class Module:
             for param in module.parameters():
                 yield param
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self.forward(*args, **kwargs)
 
-    def forward(self, *args, **kwargs):
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        """
+        Defines the computation performed at every call.
+        Should be overridden by all subclasses.
+        """
         raise NotImplementedError
 
-    def to(self, device):
-        """Moves all parameters and buffers to the specified device."""
+    def to(self, device: str) -> 'Module':
+        """
+        Moves all parameters and buffers to the specified device.
+        
+        Args:
+            device (str): The target device ('cpu' or 'gpu').
+            
+        Returns:
+            Module: self
+        """
         for param in self._parameters.values():
             param.to(device)
         for buf_name, buf in self._buffers.items():
@@ -51,19 +72,53 @@ class Module:
             module.to(device)
         return self
 
-    def train(self, mode: bool = True):
+    def train(self, mode: bool = True) -> 'Module':
+        """
+        Sets the module in training mode.
+        This has any effect only on certain modules (e.g. Dropout, BatchNorm).
+        
+        Args:
+            mode (bool): whether to set training mode (True) or evaluation mode (False). Defaults to True.
+            
+        Returns:
+            Module: self
+        """
         self.training = mode
         for module in self._modules.values():
             module.train(mode)
         return self
 
-    def eval(self):
+    def eval(self) -> 'Module':
+        """
+        Sets the module in evaluation mode.
+        This is equivalent to `self.train(False)`.
+        
+        Returns:
+            Module: self
+        """
         return self.train(False)
 
-    def register_buffer(self, name, tensor):
+    def register_buffer(self, name: str, tensor: Any) -> None:
+        """
+        Adds a buffer to the module.
+        This is typically used to register a state that should not to be considered a model parameter.
+        
+        Args:
+            name (str): name of the buffer.
+            tensor (Any): buffer object to be registered.
+        """
         self._buffers[name] = tensor
 
-    def state_dict(self, prefix=''):
+    def state_dict(self, prefix: str = '') -> Dict[str, Any]:
+        """
+        Returns a dictionary containing a whole state of the module.
+        
+        Args:
+            prefix (str): optional prefix for the keys.
+            
+        Returns:
+            Dict[str, Any]: a dictionary containing the state.
+        """
         state = {}
         for name, param in self._parameters.items():
             state[prefix + name] = param.tensor.to_list()
@@ -76,10 +131,15 @@ class Module:
             state.update(module.state_dict(prefix + name + '.'))
         return state
 
-    def load_state_dict(self, state):
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """
+        Copies parameters and buffers from `state` into this module and its descendants.
+        
+        Args:
+            state (Dict[str, Any]): a dict containing parameters and persistent buffers.
+        """
         for name, param in self._parameters.items():
             if name in state:
-                # Reconstruct tensor on the same device but with loaded values
                 device_str = "gpu" if "gpu" in str(param.tensor.device) else "cpu"
                 device = orca.Device(device_str)
                 param.tensor = orca.Tensor.from_list(
@@ -106,10 +166,15 @@ class Module:
             module_state = {k.replace(f"{name}.", "", 1): v for k, v in state.items() if k.startswith(f"{name}.")}
             module.load_state_dict(module_state)
 
-    def save_weights(self, filepath):
-        # Gather all parameters natively as PyTensor
+    def save_weights(self, filepath: str) -> None:
+        """
+        Saves the module parameters to a file in Safetensors format.
+        
+        Args:
+            filepath (str): the path to save the weights to.
+        """
         state = {}
-        def _gather_params(mod, prefix=''):
+        def _gather_params(mod: 'Module', prefix: str = '') -> None:
             for n, p in mod._parameters.items():
                 state[prefix + n] = p.tensor
             for n, b in mod._buffers.items():
@@ -121,20 +186,32 @@ class Module:
         _gather_params(self)
         orca.save_tensors(filepath, state)
 
-    def load_weights(self, filepath):
+    def load_weights(self, filepath: str) -> None:
+        """
+        Loads the module parameters from a file in Safetensors format.
+        
+        Args:
+            filepath (str): the path to load the weights from.
+        """
         state = orca.load_tensors(filepath)
         
-        # Apply the loaded tensors directly to the parameters
-        def _apply_params(mod, prefix=''):
+        def _apply_params(mod: 'Module', prefix: str = '') -> None:
             for n, p in mod._parameters.items():
                 key = prefix + n
                 if key in state:
-                    p.tensor = state[key]
+                    device_str = str(p.tensor.device).lower()
+                    device = "gpu" if "gpu" in device_str else "cpu"
+                    orig_requires_grad = p.tensor.requires_grad
+                    p.tensor = state[key].to(device)
+                    if orig_requires_grad:
+                        p.tensor.require_grad()
             for n, b in mod._buffers.items():
                 key = prefix + n
                 if key in state:
                     if isinstance(b, orca.Tensor):
-                        mod._buffers[n] = state[key]
+                        device_str = str(b.device).lower()
+                        device = "gpu" if "gpu" in device_str else "cpu"
+                        mod._buffers[n] = state[key].to(device)
             for n, m in mod._modules.items():
                 _apply_params(m, prefix + n + '.')
                 

@@ -1,19 +1,31 @@
 import math
-from orca import Tensor
+from typing import Optional
+from orca.tensor import Tensor
 from .module import Module
 from .parameter import Parameter
 
 class Linear(Module):
     """
-    Applies a linear transformation to the incoming data: y = x @ W + b.
-    W is shaped (in_features, out_features).
+    Applies a linear transformation to the incoming data: `y = x A^T + b`.
+    
+    This module supports batched input. The input tensor is flattened up to the last dimension, 
+    the transformation is applied, and then reshaped back.
+    
+    Args:
+        in_features (int): Size of each input sample.
+        out_features (int): Size of each output sample.
+        bias (bool, optional): If set to False, the layer will not learn an additive bias. Default: True.
+        
+    Attributes:
+        weight (Parameter): the learnable weights of the module of shape `(in_features, out_features)`.
+        bias (Optional[Parameter]): the learnable bias of the module of shape `(1, out_features)`.
     """
     def __init__(self, in_features: int, out_features: int, bias: bool = True):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         
-        # Kaiming He Initialization (scaled for ReLU typically, here just a normal distribution based on fan_in)
+        # Kaiming He Initialization
         stdv = 1.0 / (in_features ** 0.5)
         self.weight = Parameter(Tensor.randn([in_features, out_features], mean=0.0, std=stdv, requires_grad=True))
         if bias:
@@ -22,6 +34,15 @@ class Linear(Module):
             self.bias = None
 
     def forward(self, x: Tensor) -> Tensor:
+        """
+        Forward pass of the Linear layer.
+        
+        Args:
+            x (Tensor): Input tensor of shape `(..., in_features)`.
+            
+        Returns:
+            Tensor: Output tensor of shape `(..., out_features)`.
+        """
         original_shape = x.shape
         rank = len(original_shape)
         

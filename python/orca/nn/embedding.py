@@ -16,15 +16,14 @@ class Embedding(Module):
         self.weight = Parameter(Tensor.randn([num_embeddings, embedding_dim], mean=0.0, std=1.0, requires_grad=True))
 
     def forward(self, x: Tensor) -> Tensor:
-        # x is a tensor of indices (typically (batch, sequence_length))
-        # The output should be (batch, sequence_length, embedding_dim)
-        # Using the native gather method:
-        # wait, gather natively takes a dim and an index tensor. 
-        # But wait, gather in PyTorch is slightly different from lookup!
-        # A lookup table is usually implemented as a specialized operation or via gather if gather supports taking an N-D index and 2-D source.
-        # Actually, in our gather implementation: out = src[idx]
-        # In our `gather`, the index tensor replaces the `dim` axis.
-        # E.g. if weight is (num_embeddings, embedding_dim), and x is (batch, seq_len), 
-        # gather(dim=0, index=x) -> (batch, seq_len, embedding_dim)
+        # x is assumed to be a one-hot encoded tensor of shape (batch, sequence_length, num_embeddings)
+        # We need to flatten to 2D for matmul: (batch * sequence_length, num_embeddings)
+        original_shape = x.shape
+        batch = original_shape[0]
+        seq_len = original_shape[1]
         
-        return self.weight.tensor.gather(0, x)
+        x_flat = x.reshape([batch * seq_len, self.num_embeddings])
+        out_flat = x_flat @ self.weight.tensor
+        
+        # Reshape back to (batch, sequence_length, embedding_dim)
+        return out_flat.reshape([batch, seq_len, self.embedding_dim])

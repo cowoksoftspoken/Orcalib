@@ -1,8 +1,19 @@
 import orca
+from typing import Iterable, Tuple
 from .optimizer import Optimizer
+from orca.nn.parameter import Parameter
 
 class Adam(Optimizer):
-    def __init__(self, parameters, lr=0.001, betas=(0.9, 0.999), eps=1e-8):
+    """
+    Implements Adam algorithm.
+    
+    Args:
+        parameters (Iterable[Parameter]): iterable of parameters to optimize or dicts defining parameter groups.
+        lr (float, optional): learning rate. Default: 0.001.
+        betas (Tuple[float, float], optional): coefficients used for computing running averages of gradient and its square. Default: (0.9, 0.999).
+        eps (float, optional): term added to the denominator to improve numerical stability. Default: 1e-8.
+    """
+    def __init__(self, parameters: Iterable[Parameter], lr: float = 0.001, betas: Tuple[float, float] = (0.9, 0.999), eps: float = 1e-8):
         super().__init__(parameters)
         self.lr = lr
         self.beta1, self.beta2 = betas
@@ -18,7 +29,10 @@ class Adam(Optimizer):
             self.m.append(orca.Tensor.zeros(shape, device=device))
             self.v.append(orca.Tensor.zeros(shape, device=device))
 
-    def step(self):
+    def step(self) -> None:
+        """
+        Performs a single optimization step.
+        """
         self.t += 1
         
         for i, p in enumerate(self.parameters):
@@ -51,6 +65,7 @@ class Adam(Optimizer):
                 update = (m_hat / denom) * self.lr
                 new_tensor = p.tensor - update
                 
-                # Preserve requires_grad manually by recreating or using update logic
-                p_new = orca.Tensor.from_list(new_tensor.to_list(), shape=new_tensor.shape, requires_grad=True, device=device)
+                # Preserve requires_grad manually by detaching and re-enabling graph tracking
+                p_new = new_tensor.detach()
+                p_new.require_grad()
                 p.update(p_new)

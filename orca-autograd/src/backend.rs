@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::marker::PhantomData;
 use std::fmt::Debug;
-use orca_core::{Device, DType, Shape, Result};
+use orca_core::{Device, DType, Shape, Result, OrcaError};
 use orca_tensor::{Backend, Storage};
 use crate::tape::{Tape, NodeId, BackwardOp, Gradients};
 
@@ -74,7 +74,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn add(&self, lhs: &Self::Storage, rhs: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.add(&lhs.primal, &rhs.primal, shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         // If either input has a node_id, it means they require grad, so this operation requires grad.
@@ -101,7 +101,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn matmul(&self, lhs: &Self::Storage, rhs: &Self::Storage, lhs_shape: &Shape, rhs_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.matmul(&lhs.primal, &rhs.primal, lhs_shape, rhs_shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if lhs.node_id.is_some() || rhs.node_id.is_some() {
@@ -123,7 +123,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn transpose(&self, storage: &Self::Storage, shape: &Shape, dim0: usize, dim1: usize, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.transpose(&storage.primal, shape, dim0, dim1, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -144,7 +144,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn sub(&self, lhs: &Self::Storage, rhs: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.sub(&lhs.primal, &rhs.primal, shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if lhs.node_id.is_some() || rhs.node_id.is_some() {
@@ -164,7 +164,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn mul_scalar(&self, storage: &Self::Storage, scalar: f32, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.mul_scalar(&storage.primal, scalar, shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -184,7 +184,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn mul(&self, lhs: &Self::Storage, rhs: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.mul(&lhs.primal, &rhs.primal, shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if lhs.node_id.is_some() || rhs.node_id.is_some() {
@@ -206,7 +206,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn div(&self, lhs: &Self::Storage, rhs: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.div(&lhs.primal, &rhs.primal, shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if lhs.node_id.is_some() || rhs.node_id.is_some() {
@@ -228,7 +228,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn relu(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.relu(&storage.primal, shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -248,7 +248,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn sqrt(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.sqrt(&storage.primal, shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -268,7 +268,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn sigmoid(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.sigmoid(&storage.primal, shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -300,7 +300,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn expand(&self, storage: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.expand(&storage.primal, in_shape, out_shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -320,7 +320,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn sum_to_shape(&self, storage: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.sum_to_shape(&storage.primal, in_shape, out_shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -340,7 +340,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn reshape(&self, storage: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.reshape(&storage.primal, in_shape, out_shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -360,7 +360,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn exp(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.exp(&storage.primal, shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -380,7 +380,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn log(&self, storage: &Self::Storage, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.log(&storage.primal, shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -432,7 +432,7 @@ impl<B: Backend> Backend for Autodiff<B> {
               padding: usize, stride: usize, dilation: usize, groups: usize, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.conv2d(&input.primal, &weight.primal, bias.map(|b| &b.primal), in_shape, weight_shape, padding, stride, dilation, groups, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if input.node_id.is_some() || weight.node_id.is_some() || bias.map(|b| b.node_id.is_some()).unwrap_or(false) {
@@ -486,7 +486,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn scatter(&self, storage: &Self::Storage, dim: usize, index: &Self::Storage, src: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.scatter(&storage.primal, dim, &index.primal, &src.primal, shape, index_shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if storage.node_id.is_some() || src.node_id.is_some() {
@@ -509,7 +509,7 @@ impl<B: Backend> Backend for Autodiff<B> {
     fn gather(&self, storage: &Self::Storage, dim: usize, index: &Self::Storage, shape: &Shape, index_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.gather(&storage.primal, dim, &index.primal, shape, index_shape, dtype)?;
         
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -549,7 +549,7 @@ impl<B: Backend> Backend for Autodiff<B> {
 
     fn max_to_shape(&self, storage: &Self::Storage, in_shape: &Shape, out_shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let primal = self.inner.max_to_shape(&storage.primal, in_shape, out_shape, dtype)?;
-        let mut tape = self.tape.lock().unwrap();
+        let mut tape = self.tape.lock().map_err(|_| OrcaError::InternalError("Mutex poisoned".into()))?;
         let out_id = tape.generate_id();
 
         if let Some(in_id) = storage.node_id {
@@ -598,13 +598,14 @@ struct GatherBackwardOp<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for GatherBackwardOp<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = match grads.get(self.out_id) {
             Some(g) => g.clone(),
-            None => return,
+            None => return Ok(()),
         };
-        let grad_in = backend.gather_backward(&out_grad, self.dim, &self.index_primal, &self.shape, &self.index_shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+        let grad_in = backend.gather_backward(&out_grad, self.dim, &self.index_primal, &self.shape, &self.index_shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -622,19 +623,20 @@ struct ScatterBackward<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for ScatterBackward<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = match grads.get(self.out_id) {
             Some(g) => g.clone(),
-            None => return,
+            None => return Ok(()),
         };
         if let Some(b_id) = self.base_id {
-            let grad_base = backend.scatter_backward_base(&out_grad, self.dim, &self.index_primal, &self.shape, &self.index_shape, self.dtype).unwrap();
-            grads.accumulate(b_id, grad_base, backend);
+            let grad_base = backend.scatter_backward_base(&out_grad, self.dim, &self.index_primal, &self.shape, &self.index_shape, self.dtype)?;
+            grads.accumulate(b_id, grad_base, backend)?;
         }
         if let Some(s_id) = self.src_id {
-            let grad_src = backend.scatter_backward_src(&out_grad, self.dim, &self.index_primal, &self.shape, &self.index_shape, self.dtype).unwrap();
-            grads.accumulate(s_id, grad_src, backend);
+            let grad_src = backend.scatter_backward_src(&out_grad, self.dim, &self.index_primal, &self.shape, &self.index_shape, self.dtype)?;
+            grads.accumulate(s_id, grad_src, backend)?;
         }
+            Ok(())
     }
 }
 
@@ -647,18 +649,19 @@ struct AddBackward {
 }
 
 impl<B: Backend> BackwardOp<B> for AddBackward {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         if let Some(out_grad) = grads.get(self.out_id) {
             let out_grad_cloned = out_grad.clone();
             let out_grad_cloned_2 = out_grad.clone();
 
             if let Some(lhs) = self.lhs_id {
-                grads.accumulate(lhs, out_grad_cloned, backend);
+                grads.accumulate(lhs, out_grad_cloned, backend)?;
             }
             if let Some(rhs) = self.rhs_id {
-                grads.accumulate(rhs, out_grad_cloned_2, backend);
+                grads.accumulate(rhs, out_grad_cloned_2, backend)?;
             }
         }
+            Ok(())
     }
 }
 
@@ -675,13 +678,14 @@ struct MaxToShapeBackward<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for MaxToShapeBackward<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = match grads.get(self.out_id) {
             Some(g) => g.clone(),
-            None => return,
+            None => return Ok(()),
         };
-        let grad_in = backend.max_to_shape_backward(&out_grad, &self.in_primal, &self.out_primal, &self.in_shape, &self.out_shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+        let grad_in = backend.max_to_shape_backward(&out_grad, &self.in_primal, &self.out_primal, &self.in_shape, &self.out_shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -699,11 +703,11 @@ struct MatMulBackward<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for MatMulBackward<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = if let Some(g) = grads.get(self.out_id) {
             g.clone()
         } else {
-            return;
+            return Ok(());
         };
 
         let mut out_shape_vec = self.lhs_shape.to_vec();
@@ -717,23 +721,24 @@ impl<B: Backend> BackwardOp<B> for MatMulBackward<B> {
         if let Some(lhs) = self.lhs_id {
             // grad_x = grad_z @ y^T
             let rhs_rank = self.rhs_shape.rank();
-            let rhs_t = backend.transpose(&self.rhs_primal, &self.rhs_shape, rhs_rank - 2, rhs_rank - 1, self.dtype).unwrap();
+            let rhs_t = backend.transpose(&self.rhs_primal, &self.rhs_shape, rhs_rank - 2, rhs_rank - 1, self.dtype)?;
             let mut rhs_t_shape_vec = self.rhs_shape.to_vec();
             rhs_t_shape_vec.swap(rhs_rank - 2, rhs_rank - 1);
             let rhs_t_shape = Shape::new(rhs_t_shape_vec);
-            let grad_lhs = backend.matmul(&out_grad, &rhs_t, &out_shape, &rhs_t_shape, self.dtype).unwrap();
-            grads.accumulate(lhs, grad_lhs, backend);
+            let grad_lhs = backend.matmul(&out_grad, &rhs_t, &out_shape, &rhs_t_shape, self.dtype)?;
+            grads.accumulate(lhs, grad_lhs, backend)?;
         }
         if let Some(rhs) = self.rhs_id {
             // grad_y = x^T @ grad_z
             let lhs_rank = self.lhs_shape.rank();
-            let lhs_t = backend.transpose(&self.lhs_primal, &self.lhs_shape, lhs_rank - 2, lhs_rank - 1, self.dtype).unwrap();
+            let lhs_t = backend.transpose(&self.lhs_primal, &self.lhs_shape, lhs_rank - 2, lhs_rank - 1, self.dtype)?;
             let mut lhs_t_shape_vec = self.lhs_shape.to_vec();
             lhs_t_shape_vec.swap(lhs_rank - 2, lhs_rank - 1);
             let lhs_t_shape = Shape::new(lhs_t_shape_vec);
-            let grad_rhs = backend.matmul(&lhs_t, &out_grad, &lhs_t_shape, &out_shape, self.dtype).unwrap();
-            grads.accumulate(rhs, grad_rhs, backend);
+            let grad_rhs = backend.matmul(&lhs_t, &out_grad, &lhs_t_shape, &out_shape, self.dtype)?;
+            grads.accumulate(rhs, grad_rhs, backend)?;
         }
+            Ok(())
     }
 }
 
@@ -750,19 +755,20 @@ struct TransposeBackward<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for TransposeBackward<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = if let Some(g) = grads.get(self.out_id) {
             g.clone()
         } else {
-            return;
+            return Ok(());
         };
 
         // grad_in = (grad_out)^T
         let mut out_shape_vec = self.shape.to_vec();
         out_shape_vec.swap(self.dim0, self.dim1);
         let out_shape = Shape::new(out_shape_vec);
-        let grad_in = backend.transpose(&out_grad, &out_shape, self.dim0, self.dim1, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+        let grad_in = backend.transpose(&out_grad, &out_shape, self.dim0, self.dim1, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -777,23 +783,24 @@ struct SubBackward {
 }
 
 impl<B: Backend> BackwardOp<B> for SubBackward {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = if let Some(g) = grads.get(self.out_id) {
             g.clone()
         } else {
-            return;
+            return Ok(());
         };
 
         if let Some(lhs) = self.lhs_id {
             // grad_x = grad_z
-            grads.accumulate(lhs, out_grad.clone(), backend);
+            grads.accumulate(lhs, out_grad.clone(), backend)?;
         }
         if let Some(rhs) = self.rhs_id {
             // grad_y = -grad_z
             // Implement -grad_z as mul_scalar(-1.0)
-            let grad_rhs = backend.mul_scalar(&out_grad, -1.0, &self.shape, self.dtype).unwrap();
-            grads.accumulate(rhs, grad_rhs, backend);
+            let grad_rhs = backend.mul_scalar(&out_grad, -1.0, &self.shape, self.dtype)?;
+            grads.accumulate(rhs, grad_rhs, backend)?;
         }
+            Ok(())
     }
 }
 
@@ -808,16 +815,17 @@ struct MulScalarBackward {
 }
 
 impl<B: Backend> BackwardOp<B> for MulScalarBackward {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = if let Some(g) = grads.get(self.out_id) {
             g.clone()
         } else {
-            return;
+            return Ok(());
         };
 
         // grad_in = grad_out * scalar
-        let grad_in = backend.mul_scalar(&out_grad, self.scalar, &self.shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+        let grad_in = backend.mul_scalar(&out_grad, self.scalar, &self.shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -834,23 +842,24 @@ struct MulBackward<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for MulBackward<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = if let Some(g) = grads.get(self.out_id) {
             g.clone()
         } else {
-            return;
+            return Ok(());
         };
 
         if let Some(lhs) = self.lhs_id {
             // grad_x = grad_z * y
-            let grad_lhs = backend.mul(&out_grad, &self.rhs_primal, &self.shape, self.dtype).unwrap();
-            grads.accumulate(lhs, grad_lhs, backend);
+            let grad_lhs = backend.mul(&out_grad, &self.rhs_primal, &self.shape, self.dtype)?;
+            grads.accumulate(lhs, grad_lhs, backend)?;
         }
         if let Some(rhs) = self.rhs_id {
             // grad_y = grad_z * x
-            let grad_rhs = backend.mul(&out_grad, &self.lhs_primal, &self.shape, self.dtype).unwrap();
-            grads.accumulate(rhs, grad_rhs, backend);
+            let grad_rhs = backend.mul(&out_grad, &self.lhs_primal, &self.shape, self.dtype)?;
+            grads.accumulate(rhs, grad_rhs, backend)?;
         }
+            Ok(())
     }
 }
 
@@ -865,16 +874,17 @@ struct ReluBackward<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for ReluBackward<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = if let Some(g) = grads.get(self.out_id) {
             g.clone()
         } else {
-            return;
+            return Ok(());
         };
 
         // grad_in = grad_out * (in_primal > 0)
-        let grad_in = backend.relu_backward(&out_grad, &self.in_primal, &self.shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+        let grad_in = backend.relu_backward(&out_grad, &self.in_primal, &self.shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -889,16 +899,17 @@ struct SigmoidBackward<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for SigmoidBackward<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = if let Some(g) = grads.get(self.out_id) {
             g.clone()
         } else {
-            return;
+            return Ok(());
         };
 
         // grad_in = grad_out * y * (1 - y)
-        let grad_in = backend.sigmoid_backward(&out_grad, &self.out_primal, &self.shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+        let grad_in = backend.sigmoid_backward(&out_grad, &self.out_primal, &self.shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -913,16 +924,17 @@ struct ExpandBackward {
 }
 
 impl<B: Backend> BackwardOp<B> for ExpandBackward {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = if let Some(g) = grads.get(self.out_id) {
             g.clone()
         } else {
-            return;
+            return Ok(());
         };
 
         // grad_in = sum_to_shape(grad_out, in_shape)
-        let grad_in = backend.sum_to_shape(&out_grad, &self.out_shape, &self.in_shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+        let grad_in = backend.sum_to_shape(&out_grad, &self.out_shape, &self.in_shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -937,16 +949,17 @@ struct SumToShapeBackward {
 }
 
 impl<B: Backend> BackwardOp<B> for SumToShapeBackward {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = if let Some(g) = grads.get(self.out_id) {
             g.clone()
         } else {
-            return;
+            return Ok(());
         };
 
         // grad_in = expand(grad_out, in_shape)
-        let grad_in = backend.expand(&out_grad, &self.out_shape, &self.in_shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+        let grad_in = backend.expand(&out_grad, &self.out_shape, &self.in_shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -961,11 +974,12 @@ struct ReshapeBackward {
 }
 
 impl<B: Backend> BackwardOp<B> for ReshapeBackward {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
-        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return; };
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
+        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return Ok(()); };
         // grad_in = reshape(grad_out, in_shape)
-        let grad_in = backend.reshape(&out_grad, &self.out_shape, &self.in_shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+        let grad_in = backend.reshape(&out_grad, &self.out_shape, &self.in_shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -980,10 +994,11 @@ struct ExpBackwardOp<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for ExpBackwardOp<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
-        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return; };
-        let grad_in = backend.exp_backward(&out_grad, &self.out_primal, &self.shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
+        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return Ok(()); };
+        let grad_in = backend.exp_backward(&out_grad, &self.out_primal, &self.shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -998,10 +1013,11 @@ struct LogBackwardOp<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for LogBackwardOp<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
-        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return; };
-        let grad_in = backend.log_backward(&out_grad, &self.in_primal, &self.shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
+        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return Ok(()); };
+        let grad_in = backend.log_backward(&out_grad, &self.in_primal, &self.shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -1018,23 +1034,24 @@ struct DivBackward<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for DivBackward<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
         let out_grad = if let Some(g) = grads.get(self.out_id) {
             g.clone()
         } else {
-            return;
+            return Ok(());
         };
 
         if let Some(lhs) = self.lhs_id {
             // grad_x = grad_z / y
-            let grad_lhs = backend.div_backward_lhs(&out_grad, &self.rhs_primal, &self.shape, self.dtype).unwrap();
-            grads.accumulate(lhs, grad_lhs, backend);
+            let grad_lhs = backend.div_backward_lhs(&out_grad, &self.rhs_primal, &self.shape, self.dtype)?;
+            grads.accumulate(lhs, grad_lhs, backend)?;
         }
         if let Some(rhs) = self.rhs_id {
             // grad_y = grad_z * (-x / y^2)
-            let grad_rhs = backend.div_backward_rhs(&out_grad, &self.lhs_primal, &self.rhs_primal, &self.shape, self.dtype).unwrap();
-            grads.accumulate(rhs, grad_rhs, backend);
+            let grad_rhs = backend.div_backward_rhs(&out_grad, &self.lhs_primal, &self.rhs_primal, &self.shape, self.dtype)?;
+            grads.accumulate(rhs, grad_rhs, backend)?;
         }
+            Ok(())
     }
 }
 
@@ -1049,10 +1066,11 @@ struct SqrtBackwardOp<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for SqrtBackwardOp<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
-        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return; };
-        let grad_in = backend.sqrt_backward(&out_grad, &self.out_primal, &self.shape, self.dtype).unwrap();
-        grads.accumulate(self.in_id, grad_in, backend);
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
+        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return Ok(()); };
+        let grad_in = backend.sqrt_backward(&out_grad, &self.out_primal, &self.shape, self.dtype)?;
+        grads.accumulate(self.in_id, grad_in, backend)?;
+            Ok(())
     }
 }
 
@@ -1075,25 +1093,26 @@ struct Conv2dBackward<B: Backend> {
 }
 
 impl<B: Backend> BackwardOp<B> for Conv2dBackward<B> {
-    fn backward(&self, grads: &mut Gradients<B>, backend: &B) {
-        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return; };
+    fn backward(&self, grads: &mut Gradients<B>, backend: &B) -> orca_core::Result<()> {
+        let out_grad = if let Some(g) = grads.get(self.out_id) { g.clone() } else { return Ok(()); };
         
         let out_h = (self.in_shape[2] + 2 * self.padding - self.dilation * (self.weight_shape[2] - 1) - 1) / self.stride + 1;
         let out_w = (self.in_shape[3] + 2 * self.padding - self.dilation * (self.weight_shape[3] - 1) - 1) / self.stride + 1;
         let out_shape = Shape::new(vec![self.in_shape[0], self.weight_shape[0], out_h, out_w]);
 
         if let Some(in_id) = self.in_id {
-            let grad_in = backend.conv2d_backward_input(&out_grad, &self.weight_primal, &self.in_shape, &self.weight_shape, self.padding, self.stride, self.dilation, self.groups, self.dtype).unwrap();
-            grads.accumulate(in_id, grad_in, backend);
+            let grad_in = backend.conv2d_backward_input(&out_grad, &self.weight_primal, &self.in_shape, &self.weight_shape, self.padding, self.stride, self.dilation, self.groups, self.dtype)?;
+            grads.accumulate(in_id, grad_in, backend)?;
         }
         if let Some(w_id) = self.weight_id {
-            let grad_w = backend.conv2d_backward_weight(&out_grad, &self.in_primal, &self.in_shape, &self.weight_shape, self.padding, self.stride, self.dilation, self.groups, self.dtype).unwrap();
-            grads.accumulate(w_id, grad_w, backend);
+            let grad_w = backend.conv2d_backward_weight(&out_grad, &self.in_primal, &self.in_shape, &self.weight_shape, self.padding, self.stride, self.dilation, self.groups, self.dtype)?;
+            grads.accumulate(w_id, grad_w, backend)?;
         }
         if let Some(b_id) = self.bias_id {
-            let grad_b = backend.conv2d_backward_bias(&out_grad, &out_shape, self.dtype).unwrap();
-            grads.accumulate(b_id, grad_b, backend);
+            let grad_b = backend.conv2d_backward_bias(&out_grad, &out_shape, self.dtype)?;
+            grads.accumulate(b_id, grad_b, backend)?;
         }
+            Ok(())
     }
 }
 

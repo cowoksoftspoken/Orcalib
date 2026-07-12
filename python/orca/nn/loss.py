@@ -4,7 +4,13 @@ from orca.tensor import Tensor
 class MSELoss(Module):
     """
     Creates a criterion that measures the mean squared error (squared L2 norm) between
-    each element in the input `x` and target `y`.
+    each element in the input `pred` and target `target`.
+    
+    Args:
+        reduction (str, optional): Specifies the reduction to apply to the output:
+            'none' | 'mean' | 'sum'. 'none': no reduction will be applied, 'mean': the sum
+            of the output will be divided by the number of elements, 'sum': the output will
+            be summed. Default: 'mean'.
     """
     def __init__(self, reduction: str = 'mean'):
         super().__init__()
@@ -13,6 +19,16 @@ class MSELoss(Module):
         self.reduction = reduction
 
     def forward(self, pred: Tensor, target: Tensor) -> Tensor:
+        """
+        Forward pass for MSELoss.
+        
+        Args:
+            pred (Tensor): Predictions tensor.
+            target (Tensor): Target/labels tensor of the same shape as pred.
+            
+        Returns:
+            Tensor: Loss tensor. Scalar if reduction is 'mean' or 'sum', otherwise has the same shape as inputs.
+        """
         diff = pred - target
         squared = diff * diff
         
@@ -27,6 +43,12 @@ class CrossEntropyLoss(Module):
     """
     Computes the cross entropy loss between input logits and target.
     Target is expected to be one-hot encoded.
+    
+    This criterion combines `LogSoftmax` and `NLLLoss` in one single class.
+    
+    Args:
+        reduction (str, optional): Specifies the reduction to apply to the output:
+            'none' | 'mean' | 'sum'. Default: 'mean'.
     """
     def __init__(self, reduction: str = 'mean'):
         super().__init__()
@@ -35,17 +57,32 @@ class CrossEntropyLoss(Module):
         self.reduction = reduction
 
     def forward(self, pred: Tensor, target: Tensor) -> Tensor:
+        """
+        Forward pass for CrossEntropyLoss.
+        
+        Args:
+            pred (Tensor): Logits (unnormalized scores) tensor of shape `(Batch, Classes)`.
+            target (Tensor): Target tensor of shape `(Batch, Classes)`, one-hot encoded.
+            
+        Returns:
+            Tensor: Loss tensor. Scalar if reduction is 'mean' or 'sum'.
+        """
         # pred: [Batch, Classes], target: [Batch, Classes] (one-hot)
-        exp_pred = pred.exp()
         batch_size = pred.shape[0]
         
-        # sum_exp: [Batch, 1]
-        sum_exp = exp_pred.sum_to_shape([batch_size, 1])
+        # LogSumExp trick for numerical stability
+        max_pred_base = pred.max_to_shape([batch_size, 1])
+        max_pred = max_pred_base.expand(list(pred.shape))
+        shifted_pred = pred - max_pred
         
-        # log_sum_exp: [Batch, 1]
-        log_sum_exp = sum_exp.log()
+        exp_pred = shifted_pred.exp()
+        sum_exp_base = exp_pred.sum_to_shape([batch_size, 1])
+        sum_exp = sum_exp_base.expand(list(pred.shape))
         
-        # log_softmax: [Batch, Classes] (Broadcasting [B, C] - [B, 1])
+        # log_sum_exp needs to be expanded too
+        log_sum_exp = max_pred + sum_exp.log()
+        
+        # log_softmax: [Batch, Classes]
         log_softmax = pred - log_sum_exp
         
         # loss_matrix: [Batch, Classes]
