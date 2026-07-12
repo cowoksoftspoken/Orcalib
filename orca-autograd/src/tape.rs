@@ -1,6 +1,6 @@
+use orca_tensor::Backend;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use orca_tensor::Backend;
 
 /// A unique identifier for a node in the computation graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -31,7 +31,12 @@ impl<B: Backend> Gradients<B> {
     }
 
     /// Insert or accumulate a gradient for a given node.
-    pub fn accumulate(&mut self, id: NodeId, grad: B::Storage, backend: &B) -> orca_core::Result<()> {
+    pub fn accumulate(
+        &mut self,
+        id: NodeId,
+        grad: B::Storage,
+        backend: &B,
+    ) -> orca_core::Result<()> {
         if let Some(existing) = self.grads.get(&id) {
             let sum = backend.accumulate_grad(existing, &grad)?;
             self.grads.insert(id, sum);
@@ -89,7 +94,12 @@ impl<B: Backend> Tape<B> {
         NodeId(id)
     }
 
-    pub fn execute_backward(&mut self, root_id: NodeId, root_grad: B::Storage, backend: &B) -> orca_core::Result<()> {
+    pub fn execute_backward(
+        &mut self,
+        root_id: NodeId,
+        root_grad: B::Storage,
+        backend: &B,
+    ) -> orca_core::Result<()> {
         self.grads.grads.insert(root_id, root_grad);
         for op in self.nodes.iter().rev() {
             op.backward(&mut self.grads, backend)?;

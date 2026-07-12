@@ -1,9 +1,9 @@
-use std::ops::Add;
 use crate::backend::Backend;
-use orca_core::{Device, DType, Shape, OrcaError, Result};
+use orca_core::{DType, Device, OrcaError, Result, Shape};
+use std::ops::Add;
 
 /// The core multidimensional array representation in Orca.
-/// 
+///
 /// A Tensor is parameterized over a generic `Backend` trait, enabling
 /// zero-cost dispatch to different execution environments (CPU, CUDA, etc.)
 #[derive(Debug, Clone)]
@@ -49,56 +49,73 @@ impl<B: Backend> Tensor<B> {
     }
 
     /// Creates a new tensor filled with random uniform values between low and high.
-    pub fn rand_uniform(backend: B, shape: impl Into<Shape>, low: f32, high: f32, _dtype: DType) -> Result<Self> {
+    pub fn rand_uniform(
+        backend: B,
+        shape: impl Into<Shape>,
+        low: f32,
+        high: f32,
+        _dtype: DType,
+    ) -> Result<Self> {
         use rand::Rng;
         let shape = shape.into();
         let num_elements = shape.num_elements();
-        
+
         let mut rng = rand::thread_rng();
         let mut data = Vec::with_capacity(num_elements);
         for _ in 0..num_elements {
             data.push(rng.gen_range(low..high));
         }
-        
+
         Self::from_f32_slice(backend, &data, shape.clone())
     }
 
     /// Creates a new tensor filled with random normal values.
-    pub fn randn(backend: B, shape: impl Into<Shape>, mean: f32, std: f32, _dtype: DType) -> Result<Self> {
-        use rand_distr::{Normal, Distribution};
+    pub fn randn(
+        backend: B,
+        shape: impl Into<Shape>,
+        mean: f32,
+        std: f32,
+        _dtype: DType,
+    ) -> Result<Self> {
+        use rand_distr::{Distribution, Normal};
         let shape = shape.into();
         let num_elements = shape.num_elements();
-        
+
         let normal = Normal::new(mean, std).map_err(|_| OrcaError::ShapeMismatch {
             op: "randn",
             expected: "valid std dev".to_string(),
             got: "invalid std dev".to_string(),
         })?;
-        
+
         let mut rng = rand::thread_rng();
         let mut data = Vec::with_capacity(num_elements);
         for _ in 0..num_elements {
             data.push(normal.sample(&mut rng));
         }
-        
+
         Self::from_f32_slice(backend, &data, shape.clone())
     }
 
     /// Creates a dropout mask tensor scaled by 1/(1-p).
-    pub fn rand_dropout_mask(backend: B, shape: impl Into<Shape>, p: f32, _dtype: DType) -> Result<Self> {
+    pub fn rand_dropout_mask(
+        backend: B,
+        shape: impl Into<Shape>,
+        p: f32,
+        _dtype: DType,
+    ) -> Result<Self> {
         use rand::Rng;
         let shape = shape.into();
         let num_elements = shape.num_elements();
-        
+
         let mut rng = rand::thread_rng();
         let mut data = Vec::with_capacity(num_elements);
         let scale = 1.0 / (1.0 - p);
-        
+
         for _ in 0..num_elements {
             let val = if rng.gen::<f32>() > p { scale } else { 0.0 };
             data.push(val);
         }
-        
+
         Self::from_f32_slice(backend, &data, shape.clone())
     }
 
@@ -121,7 +138,7 @@ impl<B: Backend> Tensor<B> {
     pub fn device(&self) -> Device {
         self.backend.device()
     }
-    
+
     /// Gets a reference to the backend.
     pub fn backend(&self) -> &B {
         &self.backend
@@ -171,7 +188,7 @@ impl<B: Backend> Tensor<B> {
             });
         }
         let storage = backend.from_f32_slice(&shape, data)?;
-        
+
         Ok(Self {
             storage,
             shape,
@@ -243,11 +260,15 @@ impl<B: Backend> Tensor<B> {
         if self.shape[rank1 - 1] != rhs.shape[rank2 - 2] {
             return Err(OrcaError::ShapeMismatch {
                 op: "matmul",
-                expected: format!("Inner dimensions must match: {} == {}", self.shape[rank1 - 1], rhs.shape[rank2 - 2]),
+                expected: format!(
+                    "Inner dimensions must match: {} == {}",
+                    self.shape[rank1 - 1],
+                    rhs.shape[rank2 - 2]
+                ),
                 got: format!("{} != {}", self.shape[rank1 - 1], rhs.shape[rank2 - 2]),
             });
         }
-        
+
         // Ensure batch dimensions match
         if rank1 != rank2 {
             // For now, require same rank
@@ -266,18 +287,23 @@ impl<B: Backend> Tensor<B> {
                 });
             }
         }
-        
+
         if self.backend.device() != rhs.backend.device() {
-            return Err(OrcaError::DeviceMismatch(self.backend.device(), rhs.backend.device()));
+            return Err(OrcaError::DeviceMismatch(
+                self.backend.device(),
+                rhs.backend.device(),
+            ));
         }
         let target_dtype = self.dtype.promote(rhs.dtype);
         let lhs_storage = if self.dtype != target_dtype {
-            self.backend.cast(&self.storage, &self.shape, self.dtype, target_dtype)?
+            self.backend
+                .cast(&self.storage, &self.shape, self.dtype, target_dtype)?
         } else {
             self.storage.clone()
         };
         let rhs_storage = if rhs.dtype != target_dtype {
-            rhs.backend.cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
+            rhs.backend
+                .cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
         } else {
             rhs.storage.clone()
         };
@@ -286,9 +312,15 @@ impl<B: Backend> Tensor<B> {
         out_shape_vec[rank1 - 2] = self.shape[rank1 - 2];
         out_shape_vec[rank1 - 1] = rhs.shape[rank2 - 1];
         let out_shape = Shape::new(out_shape_vec);
-        let storage = self.backend.matmul(&lhs_storage, &rhs_storage, &self.shape, &rhs.shape, target_dtype)?;
+        let storage = self.backend.matmul(
+            &lhs_storage,
+            &rhs_storage,
+            &self.shape,
+            &rhs.shape,
+            target_dtype,
+        )?;
         let strides = Self::compute_contiguous_strides(&out_shape);
-        
+
         Ok(Tensor {
             storage,
             shape: out_shape,
@@ -298,11 +330,12 @@ impl<B: Backend> Tensor<B> {
         })
     }
 
-
     /// Multiply by a scalar.
     pub fn mul_scalar(&self, scalar: f32) -> Result<Self> {
-        let storage = self.backend.mul_scalar(&self.storage, scalar, &self.shape, self.dtype)?;
-        
+        let storage = self
+            .backend
+            .mul_scalar(&self.storage, scalar, &self.shape, self.dtype)?;
+
         Ok(Tensor {
             storage,
             shape: self.shape.clone(),
@@ -325,7 +358,9 @@ impl<B: Backend> Tensor<B> {
     }
 
     pub fn sigmoid(&self) -> Result<Self> {
-        let storage = self.backend.sigmoid(&self.storage, &self.shape, self.dtype)?;
+        let storage = self
+            .backend
+            .sigmoid(&self.storage, &self.shape, self.dtype)?;
         Ok(Self {
             storage,
             shape: self.shape.clone(),
@@ -336,7 +371,9 @@ impl<B: Backend> Tensor<B> {
     }
 
     pub fn expand(&self, out_shape: &Shape) -> Result<Self> {
-        let storage = self.backend.expand(&self.storage, &self.shape, out_shape, self.dtype)?;
+        let storage = self
+            .backend
+            .expand(&self.storage, &self.shape, out_shape, self.dtype)?;
         // Strides for the expanded tensor should be contiguous for now since we physically copied the data
         let mut strides = vec![0; out_shape.rank()];
         let mut current = 1;
@@ -354,7 +391,9 @@ impl<B: Backend> Tensor<B> {
     }
 
     pub fn sum_to_shape(&self, out_shape: &Shape) -> Result<Self> {
-        let storage = self.backend.sum_to_shape(&self.storage, &self.shape, out_shape, self.dtype)?;
+        let storage =
+            self.backend
+                .sum_to_shape(&self.storage, &self.shape, out_shape, self.dtype)?;
         let mut strides = vec![0; out_shape.rank()];
         let mut current = 1;
         for i in (0..out_shape.rank()).rev() {
@@ -371,7 +410,9 @@ impl<B: Backend> Tensor<B> {
     }
 
     pub fn max_to_shape(&self, out_shape: &Shape) -> Result<Self> {
-        let storage = self.backend.max_to_shape(&self.storage, &self.shape, out_shape, self.dtype)?;
+        let storage =
+            self.backend
+                .max_to_shape(&self.storage, &self.shape, out_shape, self.dtype)?;
         let mut strides = vec![0; out_shape.rank()];
         let mut current = 1;
         for i in (0..out_shape.rank()).rev() {
@@ -393,7 +434,9 @@ impl<B: Backend> Tensor<B> {
     }
 
     pub fn reshape(&self, out_shape: &Shape) -> Result<Self> {
-        let storage = self.backend.reshape(&self.storage, &self.shape, out_shape, self.dtype)?;
+        let storage = self
+            .backend
+            .reshape(&self.storage, &self.shape, out_shape, self.dtype)?;
         let mut strides = vec![0; out_shape.rank()];
         let mut current = 1;
         for i in (0..out_shape.rank()).rev() {
@@ -422,12 +465,37 @@ impl<B: Backend> Tensor<B> {
 
     pub fn log(&self) -> Result<Self> {
         let storage = self.backend.log(&self.storage, &self.shape, self.dtype)?;
-        Ok(Self { storage, shape: self.shape.clone(), strides: self.strides.clone(), dtype: self.dtype, backend: self.backend.clone() })
+        Ok(Self {
+            storage,
+            shape: self.shape.clone(),
+            strides: self.strides.clone(),
+            dtype: self.dtype,
+            backend: self.backend.clone(),
+        })
     }
 
-    pub fn conv2d(&self, weight: &Self, bias: Option<&Self>, padding: usize, stride: usize, dilation: usize, groups: usize) -> Result<Self> {
-        let storage = self.backend.conv2d(&self.storage, &weight.storage, bias.map(|b| &b.storage), &self.shape, &weight.shape, padding, stride, dilation, groups, self.dtype)?;
-        
+    pub fn conv2d(
+        &self,
+        weight: &Self,
+        bias: Option<&Self>,
+        padding: usize,
+        stride: usize,
+        dilation: usize,
+        groups: usize,
+    ) -> Result<Self> {
+        let storage = self.backend.conv2d(
+            &self.storage,
+            &weight.storage,
+            bias.map(|b| &b.storage),
+            &self.shape,
+            &weight.shape,
+            padding,
+            stride,
+            dilation,
+            groups,
+            self.dtype,
+        )?;
+
         let in_h = self.shape[2];
         let in_w = self.shape[3];
         let k_h = weight.shape[2];
@@ -436,8 +504,14 @@ impl<B: Backend> Tensor<B> {
         let out_w = (in_w + 2 * padding - dilation * (k_w - 1) - 1) / stride + 1;
         let out_shape = Shape::new(vec![self.shape[0], weight.shape[0], out_h, out_w]);
         let strides = Self::compute_contiguous_strides(&out_shape);
-        
-        Ok(Self { storage, shape: out_shape, strides, dtype: self.dtype, backend: self.backend.clone() })
+
+        Ok(Self {
+            storage,
+            shape: out_shape,
+            strides,
+            dtype: self.dtype,
+            backend: self.backend.clone(),
+        })
     }
 
     pub fn sqrt(&self) -> Result<Self> {
@@ -450,9 +524,16 @@ impl<B: Backend> Tensor<B> {
             backend: self.backend.clone(),
         })
     }
-    
+
     pub fn gather(&self, dim: usize, index: &Self) -> Result<Self> {
-        let storage = self.backend.gather(&self.storage, dim, &index.storage, &self.shape, &index.shape, self.dtype)?;
+        let storage = self.backend.gather(
+            &self.storage,
+            dim,
+            &index.storage,
+            &self.shape,
+            &index.shape,
+            self.dtype,
+        )?;
         let strides = Self::compute_contiguous_strides(&index.shape);
         Ok(Self {
             storage,
@@ -462,9 +543,17 @@ impl<B: Backend> Tensor<B> {
             backend: self.backend.clone(),
         })
     }
-    
+
     pub fn scatter(&self, dim: usize, index: &Self, src: &Self) -> Result<Self> {
-        let storage = self.backend.scatter(&self.storage, dim, &index.storage, &src.storage, &self.shape, &index.shape, self.dtype)?;
+        let storage = self.backend.scatter(
+            &self.storage,
+            dim,
+            &index.storage,
+            &src.storage,
+            &self.shape,
+            &index.shape,
+            self.dtype,
+        )?;
         let strides = Self::compute_contiguous_strides(&self.shape);
         Ok(Self {
             storage,
@@ -475,7 +564,9 @@ impl<B: Backend> Tensor<B> {
         })
     }
     pub fn transpose(&self, dim0: usize, dim1: usize) -> Result<Self> {
-        let storage = self.backend.transpose(&self.storage, &self.shape, dim0, dim1, self.dtype)?;
+        let storage = self
+            .backend
+            .transpose(&self.storage, &self.shape, dim0, dim1, self.dtype)?;
         let mut new_shape_vec = self.shape.to_vec();
         new_shape_vec.swap(dim0, dim1);
         let shape = Shape::new(new_shape_vec);
@@ -494,25 +585,27 @@ impl<B: Backend> Tensor<B> {
         if parts.len() != 2 {
             return Err(OrcaError::InternalError("Invalid einsum equation".into()));
         }
-        
+
         let lhs_rhs: Vec<&str> = parts[0].split(',').collect();
         if lhs_rhs.len() != 2 || inputs.len() != 2 {
-            return Err(OrcaError::InternalError("Currently only 2-operand einsum is supported".into()));
+            return Err(OrcaError::InternalError(
+                "Currently only 2-operand einsum is supported".into(),
+            ));
         }
-        
+
         let a_str = lhs_rhs[0].trim();
         let b_str = lhs_rhs[1].trim();
         let out_str = parts[1].trim();
-        
+
         let a = inputs[0];
         let b = inputs[1];
-        
+
         // Find matching characters between a_str and b_str that are NOT in out_str. These are the contraction axes.
         let mut contract_a = Vec::new();
         let mut contract_b = Vec::new();
         let mut batch_a = Vec::new();
         let mut batch_b = Vec::new();
-        
+
         for (i, c) in a_str.chars().enumerate() {
             if !out_str.contains(c) {
                 contract_a.push(i);
@@ -520,7 +613,7 @@ impl<B: Backend> Tensor<B> {
                 batch_a.push(i);
             }
         }
-        
+
         for (i, c) in b_str.chars().enumerate() {
             if !out_str.contains(c) {
                 contract_b.push(i);
@@ -528,15 +621,15 @@ impl<B: Backend> Tensor<B> {
                 batch_b.push(i);
             }
         }
-        
+
         // Very basic matcher for batched matmul where last 2 dims are matrix dims
         // This is still limited but dynamically detects transpositions instead of hardcoding equations
-        
+
         // If B's contract dimension is its last dimension, we need to transpose it so it's the second-to-last
         // Actually, standard matmul is (..., M, K) @ (..., K, N)
         // If a_str = "bhqd", b_str = "bhkd" (K=d) -> Q @ K.T -> b needs transpose of last two dims
         let b_contract = contract_b.last().copied().unwrap_or(b_str.len() - 2);
-        
+
         if b_contract == b_str.len() - 1 {
             // b needs transposition for matmul
             let b_t = b.transpose(b_str.len() - 2, b_str.len() - 1)?;
@@ -547,7 +640,7 @@ impl<B: Backend> Tensor<B> {
     }
 }
 
-use std::ops::{Sub, Mul, Div};
+use std::ops::{Div, Mul, Sub};
 
 impl<B: Backend> Div for &Tensor<B> {
     type Output = Result<Tensor<B>>;
@@ -561,22 +654,29 @@ impl<B: Backend> Div for &Tensor<B> {
             });
         }
         if self.backend.device() != rhs.backend.device() {
-            return Err(OrcaError::DeviceMismatch(self.backend.device(), rhs.backend.device()));
+            return Err(OrcaError::DeviceMismatch(
+                self.backend.device(),
+                rhs.backend.device(),
+            ));
         }
         let target_dtype = self.dtype.promote(rhs.dtype);
         let lhs_storage = if self.dtype != target_dtype {
-            self.backend.cast(&self.storage, &self.shape, self.dtype, target_dtype)?
+            self.backend
+                .cast(&self.storage, &self.shape, self.dtype, target_dtype)?
         } else {
             self.storage.clone()
         };
         let rhs_storage = if rhs.dtype != target_dtype {
-            rhs.backend.cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
+            rhs.backend
+                .cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
         } else {
             rhs.storage.clone()
         };
 
-        let storage = self.backend.div(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
-        
+        let storage = self
+            .backend
+            .div(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
+
         Ok(Tensor {
             storage,
             shape: self.shape.clone(),
@@ -599,22 +699,29 @@ impl<B: Backend> Add for &Tensor<B> {
             });
         }
         if self.backend.device() != rhs.backend.device() {
-            return Err(OrcaError::DeviceMismatch(self.backend.device(), rhs.backend.device()));
+            return Err(OrcaError::DeviceMismatch(
+                self.backend.device(),
+                rhs.backend.device(),
+            ));
         }
         let target_dtype = self.dtype.promote(rhs.dtype);
         let lhs_storage = if self.dtype != target_dtype {
-            self.backend.cast(&self.storage, &self.shape, self.dtype, target_dtype)?
+            self.backend
+                .cast(&self.storage, &self.shape, self.dtype, target_dtype)?
         } else {
             self.storage.clone()
         };
         let rhs_storage = if rhs.dtype != target_dtype {
-            rhs.backend.cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
+            rhs.backend
+                .cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
         } else {
             rhs.storage.clone()
         };
 
-        let storage = self.backend.add(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
-        
+        let storage = self
+            .backend
+            .add(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
+
         Ok(Tensor {
             storage,
             shape: self.shape.clone(),
@@ -637,22 +744,29 @@ impl<B: Backend> Sub for &Tensor<B> {
             });
         }
         if self.backend.device() != rhs.backend.device() {
-            return Err(OrcaError::DeviceMismatch(self.backend.device(), rhs.backend.device()));
+            return Err(OrcaError::DeviceMismatch(
+                self.backend.device(),
+                rhs.backend.device(),
+            ));
         }
         let target_dtype = self.dtype.promote(rhs.dtype);
         let lhs_storage = if self.dtype != target_dtype {
-            self.backend.cast(&self.storage, &self.shape, self.dtype, target_dtype)?
+            self.backend
+                .cast(&self.storage, &self.shape, self.dtype, target_dtype)?
         } else {
             self.storage.clone()
         };
         let rhs_storage = if rhs.dtype != target_dtype {
-            rhs.backend.cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
+            rhs.backend
+                .cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
         } else {
             rhs.storage.clone()
         };
 
-        let storage = self.backend.sub(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
-        
+        let storage = self
+            .backend
+            .sub(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
+
         Ok(Tensor {
             storage,
             shape: self.shape.clone(),
@@ -675,22 +789,29 @@ impl<B: Backend> Mul for &Tensor<B> {
             });
         }
         if self.backend.device() != rhs.backend.device() {
-            return Err(OrcaError::DeviceMismatch(self.backend.device(), rhs.backend.device()));
+            return Err(OrcaError::DeviceMismatch(
+                self.backend.device(),
+                rhs.backend.device(),
+            ));
         }
         let target_dtype = self.dtype.promote(rhs.dtype);
         let lhs_storage = if self.dtype != target_dtype {
-            self.backend.cast(&self.storage, &self.shape, self.dtype, target_dtype)?
+            self.backend
+                .cast(&self.storage, &self.shape, self.dtype, target_dtype)?
         } else {
             self.storage.clone()
         };
         let rhs_storage = if rhs.dtype != target_dtype {
-            rhs.backend.cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
+            rhs.backend
+                .cast(&rhs.storage, &rhs.shape, rhs.dtype, target_dtype)?
         } else {
             rhs.storage.clone()
         };
 
-        let storage = self.backend.mul(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
-        
+        let storage = self
+            .backend
+            .mul(&lhs_storage, &rhs_storage, &self.shape, target_dtype)?;
+
         Ok(Tensor {
             storage,
             shape: self.shape.clone(),

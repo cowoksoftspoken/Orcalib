@@ -35,6 +35,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install maturin pytest numpy scikit-learn wgpu
       - name: Build and Install Crate
-        run: maturin develop
+        run: pip install .
       - name: Run Pytest
         run: pytest python/tests

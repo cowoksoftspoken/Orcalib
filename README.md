@@ -114,7 +114,9 @@ The framework is actively evolving. The current state reflects a stable CPU foun
 
 ## Contributing Guidelines
 
-Contributions, bug reports, and feature requests are welcome. When contributing, please ensure strict adherence to the architectural rules defined in `.agents/AGENTS.md`:
+Contributions, bug reports, and feature requests are welcome. When contributing, please ensure strict adherence to the architectural rules defined in `doc/foundation/`, `doc/foundation/ARCHITECTURE.md`, `doc/foundation/ERROR_HANDLING.md`, `doc/foundation/TRAINING_PIPELINE.md` and `doc/foundation/BENCHMARKS.md`.
+
+> **For AI Agents**: please read all files in `doc/foundation/` and `agents/AGENTS.md` carefully before making any changes.
 
 1. **Error Handling:** Usage of `.unwrap()` or `panic!` is strictly prohibited in library code (`src/`). Proper error propagation (`Result`, `OrcaError`) must be used at all times.
 2. **Crate Hierarchy:** Do not introduce circular dependencies. `orca-core` must remain independent, and `orca-autograd` must only depend on `orca-tensor` and `orca-core`.

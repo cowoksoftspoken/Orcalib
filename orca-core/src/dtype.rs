@@ -28,7 +28,7 @@ impl DType {
         if self == other {
             return self;
         }
-        
+
         match (self, other) {
             (DType::F64, _) | (_, DType::F64) => DType::F64,
             (DType::F32, _) | (_, DType::F32) => DType::F32,

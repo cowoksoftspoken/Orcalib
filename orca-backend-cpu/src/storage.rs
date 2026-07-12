@@ -1,7 +1,7 @@
-use std::alloc::{alloc_zeroed, dealloc, Layout};
-use std::sync::Arc;
-use std::fmt::{Debug, Formatter, Result as FmtResult};
 use orca_tensor::Storage;
+use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::fmt::{Debug, Formatter, Result as FmtResult};
+use std::sync::Arc;
 
 /// A robust, SIMD-aligned (64-byte) raw memory buffer for CPU tensors.
 /// Provides safe slice casting for various numeric types without alignment issues (Undefined Behavior).
@@ -17,23 +17,27 @@ unsafe impl Sync for AlignedBuffer {}
 impl AlignedBuffer {
     fn new(size_in_bytes: usize) -> Self {
         // Use 64-byte alignment to be ready for AVX-512 and cache line optimizations
-        let align = 64; 
+        let align = 64;
         let layout = Layout::from_size_align(size_in_bytes.max(1), align)
             .expect("Invalid layout for CpuStorage");
         let ptr = unsafe { alloc_zeroed(layout) };
         if ptr.is_null() {
             std::alloc::handle_alloc_error(layout);
         }
-        Self { ptr, layout, capacity_bytes: size_in_bytes }
+        Self {
+            ptr,
+            layout,
+            capacity_bytes: size_in_bytes,
+        }
     }
-    
+
     fn as_bytes(&self) -> &[u8] {
         if self.capacity_bytes == 0 {
             return &[];
         }
         unsafe { std::slice::from_raw_parts(self.ptr, self.capacity_bytes) }
     }
-    
+
     fn as_mut_bytes(&mut self) -> &mut [u8] {
         if self.capacity_bytes == 0 {
             return &mut [];
@@ -93,7 +97,10 @@ impl CpuByteStorage {
         if self.num_elements == 0 {
             return &[];
         }
-        assert!((self.data.ptr as usize).is_multiple_of(std::mem::align_of::<T>()), "Alignment mismatch for tensor type");
+        assert!(
+            (self.data.ptr as usize).is_multiple_of(std::mem::align_of::<T>()),
+            "Alignment mismatch for tensor type"
+        );
         unsafe { std::slice::from_raw_parts(self.data.ptr as *const T, self.num_elements) }
     }
 
@@ -102,7 +109,10 @@ impl CpuByteStorage {
             return &mut [];
         }
         let buf = Arc::make_mut(&mut self.data);
-        assert!((buf.ptr as usize).is_multiple_of(std::mem::align_of::<T>()), "Alignment mismatch for tensor type");
+        assert!(
+            (buf.ptr as usize).is_multiple_of(std::mem::align_of::<T>()),
+            "Alignment mismatch for tensor type"
+        );
         unsafe { std::slice::from_raw_parts_mut(buf.ptr as *mut T, self.num_elements) }
     }
 }

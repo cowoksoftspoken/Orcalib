@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use orca_tensor::Storage;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct PooledBuffer {
@@ -21,11 +21,7 @@ pub struct GpuStorage {
 }
 
 impl GpuStorage {
-    pub fn new(
-        buffer: wgpu::Buffer,
-        num_elements: usize,
-        element_size: usize
-    ) -> Self {
+    pub fn new(buffer: wgpu::Buffer, num_elements: usize, element_size: usize) -> Self {
         let inner = PooledBuffer {
             buffer: Some(buffer),
         };
@@ -41,7 +37,9 @@ impl GpuStorage {
     /// Buffer is always `Some` after construction — `PooledBuffer::drop` is the
     /// only consumer, and it runs after all references are gone.
     pub fn buffer(&self) -> &wgpu::Buffer {
-        self.inner.buffer.as_ref()
+        self.inner
+            .buffer
+            .as_ref()
             .expect("BUG: GpuStorage buffer was None — this should never happen")
     }
 }

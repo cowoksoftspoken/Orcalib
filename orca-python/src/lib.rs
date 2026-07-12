@@ -783,15 +783,15 @@ impl PyTensor {
 
     fn grad(&self) -> PyResult<Option<Self>> {
         match &self.0 {
-            PyTensorInner::Cpu(t) => {
-                Ok(t.grad().map(|grad_tensor| PyTensor(PyTensorInner::Cpu(grad_tensor))))
-            }
-            PyTensorInner::Gpu(t) => {
-                Ok(t.grad().map(|grad_tensor| PyTensor(PyTensorInner::Gpu(grad_tensor))))
-            }
+            PyTensorInner::Cpu(t) => Ok(t
+                .grad()
+                .map(|grad_tensor| PyTensor(PyTensorInner::Cpu(grad_tensor)))),
+            PyTensorInner::Gpu(t) => Ok(t
+                .grad()
+                .map(|grad_tensor| PyTensor(PyTensorInner::Gpu(grad_tensor)))),
         }
     }
-    
+
     fn detach(&self) -> PyResult<Self> {
         match &self.0 {
             PyTensorInner::Cpu(t) => Ok(PyTensor(PyTensorInner::Cpu(t.detach()))),
@@ -801,13 +801,15 @@ impl PyTensor {
 
     fn set_grad(&self, grad: &Self) -> PyResult<()> {
         match (&self.0, &grad.0) {
-            (PyTensorInner::Cpu(t), PyTensorInner::Cpu(g)) => {
-                t.set_grad(g).map_err(|e| PyValueError::new_err(e.to_string()))
-            }
-            (PyTensorInner::Gpu(t), PyTensorInner::Gpu(g)) => {
-                t.set_grad(g).map_err(|e| PyValueError::new_err(e.to_string()))
-            }
-            _ => Err(PyValueError::new_err("Cannot set_grad across different devices")),
+            (PyTensorInner::Cpu(t), PyTensorInner::Cpu(g)) => t
+                .set_grad(g)
+                .map_err(|e| PyValueError::new_err(e.to_string())),
+            (PyTensorInner::Gpu(t), PyTensorInner::Gpu(g)) => t
+                .set_grad(g)
+                .map_err(|e| PyValueError::new_err(e.to_string())),
+            _ => Err(PyValueError::new_err(
+                "Cannot set_grad across different devices",
+            )),
         }
     }
 }
