@@ -13,6 +13,7 @@ def run_benchmark(shape_in, shape_out, batch_size, num_steps=50):
     
     # Warmup
     for _ in range(3):
+        w.zero_grad()
         out = (x @ w + b).relu()
         diff = out - target
         loss = (diff * diff).sum()
@@ -20,6 +21,7 @@ def run_benchmark(shape_in, shape_out, batch_size, num_steps=50):
         
     start_time = time.time()
     for _ in range(num_steps):
+        w.zero_grad()
         out = (x @ w + b).relu()
         diff = out - target
         loss = (diff * diff).sum()

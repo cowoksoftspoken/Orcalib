@@ -23,6 +23,7 @@ class Embedding(Module):
         seq_len = original_shape[1]
         
         x_flat = x.reshape([batch * seq_len, self.num_embeddings])
+        print(f"[Embedding Debug] x_flat device: {x_flat.device}, weight device: {self.weight.tensor.device}")
         out_flat = x_flat @ self.weight.tensor
         
         # Reshape back to (batch, sequence_length, embedding_dim)

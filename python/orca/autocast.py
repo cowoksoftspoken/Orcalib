@@ -1,8 +1,16 @@
 class autocast:
     """
     Context manager that enables mixed precision for operations.
-    Since Orca currently supports f32 everywhere, this is mostly a placeholder
-    to maintain API compatibility with PyTorch until f16/bf16 kernels are fully integrated.
+    
+    Instances of this class serve as context managers that allow sections of your 
+    model to run in lower precision (such as float16 or bfloat16) to improve GPU 
+    performance and reduce memory consumption.
+    
+    Args:
+        device_type (str, optional): The device type to use ('cpu' or 'gpu'). Default: 'gpu'.
+        dtype (DType, optional): The desired mixed precision data type. If None, 
+            defaults to the recommended dtype for the given device.
+        enabled (bool, optional): If set to False, disables mixed precision for the block. Default: True.
     """
     def __init__(self, device_type='cuda', dtype=None, enabled=True):
         self.device_type = device_type

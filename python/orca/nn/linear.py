@@ -25,11 +25,15 @@ class Linear(Module):
         self.in_features = in_features
         self.out_features = out_features
         
-        # Kaiming He Initialization
-        stdv = 1.0 / (in_features ** 0.5)
-        self.weight = Parameter(Tensor.randn([in_features, out_features], mean=0.0, std=stdv, requires_grad=True))
+        # PyTorch-compatible Kaiming Uniform default weight initialization
+        self.weight = Parameter(Tensor.zeros([in_features, out_features], requires_grad=True))
+        from . import init
+        init.kaiming_uniform_(self.weight, a=math.sqrt(5.0), mode='fan_in', nonlinearity='leaky_relu')
+        
         if bias:
             self.bias = Parameter(Tensor.zeros([1, out_features], requires_grad=True))
+            bound = 1.0 / math.sqrt(in_features) if in_features > 0 else 0
+            init.uniform_(self.bias, -bound, bound)
         else:
             self.bias = None
 

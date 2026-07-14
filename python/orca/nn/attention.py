@@ -26,9 +26,8 @@ class MultiHeadAttention(Module):
         if self.head_dim * num_heads != embed_dim:
             raise ValueError(f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})")
 
-        self.q_proj = Linear(embed_dim, embed_dim, bias=True)
-        self.k_proj = Linear(embed_dim, embed_dim, bias=True)
-        self.v_proj = Linear(embed_dim, embed_dim, bias=True)
+        # Packed Q, K, V projection for maximum parallelism and efficiency
+        self.in_proj = Linear(embed_dim, 3 * embed_dim, bias=True)
         self.out_proj = Linear(embed_dim, embed_dim, bias=True)
         
         self.dropout = Dropout(dropout)
@@ -53,9 +52,33 @@ class MultiHeadAttention(Module):
         q_len = query.shape[1]
         k_len = key.shape[1]
         
-        q = self.q_proj(query)
-        k = self.k_proj(key)
-        v = self.v_proj(value)
+        if query is key and key is value:
+            # Self-attention: single packed projection
+            qkv = self.in_proj(query)
+            q, k, v = qkv.chunk(3, dim=-1)
+        else:
+            # Cross-attention: project query, key, and value using chunks of in_proj weights
+            w_q, w_k, w_v = self.in_proj.weight.tensor.chunk(3, dim=1)
+            
+            # Flatten to 2D for matmul with 2D weight chunks
+            q_flat = query.reshape([batch_size * q_len, query.shape[-1]])
+            k_flat = key.reshape([batch_size * k_len, key.shape[-1]])
+            v_flat = value.reshape([batch_size * k_len, value.shape[-1]])
+            
+            q = q_flat @ w_q
+            k = k_flat @ w_k
+            v = v_flat @ w_v
+            
+            # Reshape back to 3D
+            q = q.reshape([batch_size, q_len, q.shape[-1]])
+            k = k.reshape([batch_size, k_len, k.shape[-1]])
+            v = v.reshape([batch_size, k_len, v.shape[-1]])
+            
+            if self.in_proj.bias is not None:
+                b_q, b_k, b_v = self.in_proj.bias.tensor.chunk(3, dim=1)
+                q = q + b_q.expand(q.shape)
+                k = k + b_k.expand(k.shape)
+                v = v + b_v.expand(v.shape)
         
         # Reshape for multi-head attention
         # [batch_size, seq_len, num_heads, head_dim]

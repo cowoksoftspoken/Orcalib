@@ -312,6 +312,19 @@ class Tensor:
         """
         ...
         
+    def chunk(self, chunks: int, dim: int = -1) -> List['Tensor']:
+        """
+        Splits the tensor into a specific number of chunks along a given dimension.
+        
+        Args:
+            chunks (int): Number of chunks to split the tensor into.
+            dim (int, optional): The dimension along which to split. Default: -1.
+            
+        Returns:
+            List[Tensor]: A list of tensor chunks.
+        """
+        ...
+        
     def sum_to_shape(self, shape: List[int]) -> 'Tensor':
         """
         Reduces the tensor to the specified shape by summing along the dimensions that differ.

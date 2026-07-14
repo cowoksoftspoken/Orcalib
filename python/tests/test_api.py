@@ -241,3 +241,134 @@ def test_grad_scaler(simple_model):
     assert scaler.scale == 2048.0
 
 
+def test_tensor_chunk():
+    """Verify Tensor.chunk splits a tensor correctly and gradients flow back through chunks."""
+    x = orca.Tensor.from_list([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[2, 3], requires_grad=True)
+    
+    # Chunk along last dimension (dim=1) into 3 chunks
+    chunks = x.chunk(3, dim=-1)
+    assert len(chunks) == 3
+    assert chunks[0].shape == [2, 1]
+    assert chunks[1].shape == [2, 1]
+    assert chunks[2].shape == [2, 1]
+    
+    assert chunks[0].to_list() == [1.0, 4.0]
+    assert chunks[1].to_list() == [2.0, 5.0]
+    assert chunks[2].to_list() == [3.0, 6.0]
+    
+    # Verify backward pass through chunks
+    loss = chunks[0] * 10.0 + chunks[1] * 20.0 + chunks[2] * 30.0
+    # Sum to scalar
+    loss_sum = loss.sum_to_shape([1])
+    loss_sum.backward()
+    
+    # Expected grads:
+    # chunk 0: 10, chunk 1: 20, chunk 2: 30
+    assert x.grad().to_list() == [10.0, 20.0, 30.0, 10.0, 20.0, 30.0]
+
+
+def test_multi_head_attention_packed():
+    """Verify MultiHeadAttention works correctly for both self-attention (packed) and cross-attention."""
+    mha = nn.MultiHeadAttention(embed_dim=4, num_heads=2)
+    
+    # Self-attention (same query, key, value)
+    x = orca.Tensor.ones([2, 3, 4], requires_grad=True)
+    out_self = mha(x, x, x)
+    assert out_self.shape == [2, 3, 4]
+    
+    # Backward pass
+    loss_self = out_self.sum_to_shape([1])
+    loss_self.backward()
+    assert x.grad() is not None
+    
+    # Cross-attention (different inputs)
+    q = orca.Tensor.ones([2, 3, 4], requires_grad=True)
+    kv = orca.Tensor.ones([2, 5, 4], requires_grad=True)
+    out_cross = mha(q, kv, kv)
+    assert out_cross.shape == [2, 3, 4]
+    
+    loss_cross = out_cross.sum_to_shape([1])
+    loss_cross.backward()
+    assert q.grad() is not None
+    assert kv.grad() is not None
+
+
+def test_parameter_initializers():
+    """Verify parameter initialization helpers (Kaiming, Xavier, normal, uniform) run correctly."""
+    from orca.nn import init
+    
+    param = nn.Parameter(orca.Tensor.zeros([10, 20]))
+    
+    # 1. Kaiming Normal
+    init.kaiming_normal_(param)
+    assert any(val != 0.0 for val in param.tensor.to_list())
+    
+    # 2. Xavier Uniform
+    init.xavier_uniform_(param)
+    assert any(val != 0.0 for val in param.tensor.to_list())
+    
+    # 3. Zeros
+    init.zeros_(param)
+    assert all(val == 0.0 for val in param.tensor.to_list())
+    
+    # 4. Ones
+    init.ones_(param)
+    assert all(val == 1.0 for val in param.tensor.to_list())
+
+
+def test_high_level_dataset_wrappers(tmp_path):
+    """Verify ArrayDataset, CSVDataset, and random_split load and split data correctly."""
+    from orca.data import ArrayDataset, CSVDataset, DataLoader, random_split
+    import numpy as np
+    
+    # 1. ArrayDataset with list & numpy inputs
+    X_np = np.random.randn(10, 4)
+    y_np = np.array([0, 1, 2, 0, 1, 2, 0, 1, 2, 0])
+    
+    # Enable automatic one-hot encoding to 3 classes
+    dataset = ArrayDataset(X_np, y_np, one_hot_classes=3)
+    assert len(dataset) == 10
+    
+    x_sample, y_sample = dataset[0]
+    assert len(x_sample) == 4
+    assert y_sample == [1.0, 0.0, 0.0]  # Class 0 one-hot encoded
+    
+    # 2. random_split check
+    train_set, val_set = random_split(dataset, [8, 2])
+    assert len(train_set) == 8
+    assert len(val_set) == 2
+    
+    # 3. CSVDataset check
+    csv_file = tmp_path / "data.csv"
+    with open(csv_file, "w") as f:
+        f.write("feat1,feat2,target\n")
+        f.write("1.0,2.0,0\n")
+        f.write("3.0,4.0,1\n")
+        f.write("5.0,6.0,2\n")
+        f.write("7.0,8.0,0\n")
+        
+    # Load using column names
+    csv_dataset = CSVDataset(
+        str(csv_file),
+        feature_cols=["feat1", "feat2"],
+        target_cols=["target"],
+        has_header=True,
+        one_hot_classes=3
+    )
+    assert len(csv_dataset) == 4
+    x_c, y_c = csv_dataset[1]
+    assert x_c == [3.0, 4.0]
+    assert y_c == [0.0, 1.0, 0.0]  # Class 1 one-hot encoded
+    
+    # 4. DataLoader run
+    loader = DataLoader(csv_dataset, batch_size=2, shuffle=False)
+    batches = list(loader)
+    assert len(batches) == 2
+    
+    X_batch, Y_batch = batches[0]
+    assert X_batch.shape == [2, 2]
+    assert Y_batch.shape == [2, 3]
+
+
+
+

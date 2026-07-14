@@ -73,7 +73,7 @@ impl GpuBackend {
                 .request_device(
                     &wgpu::DeviceDescriptor {
                         required_features: wgpu::Features::empty(),
-                        required_limits: wgpu::Limits::downlevel_defaults(),
+                        required_limits: adapter.limits(),
                         label: None,
                     },
                     None,
@@ -1198,7 +1198,13 @@ impl Backend for GpuBackend {
             cpass.set_pipeline(&self.pipelines.transpose);
             cpass.set_bind_group(0, &bind_group, &[]);
             let workgroups = ((num_elements as f32) / 256.0).ceil() as u32;
-            cpass.dispatch_workgroups(workgroups, 1, 1);
+            let mut x = workgroups;
+            let mut y = 1;
+            if x > 65535 {
+                y = (workgroups + 65534) / 65535;
+                x = 65535;
+            }
+            cpass.dispatch_workgroups(x, y, 1);
         }
         self.queue.submit(Some(encoder.finish()));
         Ok(GpuStorage::new(out_buffer, num_elements, 4))

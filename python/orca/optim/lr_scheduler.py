@@ -1,6 +1,9 @@
 import math
 
 class LRScheduler:
+    """
+    Base class for learning rate schedulers.
+    """
     def __init__(self, optimizer):
         self.optimizer = optimizer
         self.base_lr = optimizer.lr

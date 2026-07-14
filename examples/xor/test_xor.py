@@ -30,6 +30,9 @@ Y = [
 ]
 
 print("Training XOR model...")
+model.to('cpu')
+X = [x.to('cpu') for x in X]
+Y = [y.to('cpu') for y in Y]
 for epoch in range(2000):
     total_loss = 0.0
     

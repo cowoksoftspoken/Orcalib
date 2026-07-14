@@ -14,7 +14,7 @@ struct Uniforms {
 
 @compute @workgroup_size(256)
 fn transpose_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let idx = global_id.x;
+    let idx = global_id.y * 16776960u + global_id.x; // 65535u * 256u = 16776960u
     if (idx >= uniforms.num_elements) {
         return;
     }

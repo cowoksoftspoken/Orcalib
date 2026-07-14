@@ -48,8 +48,6 @@ class TransformerEncoderLayer(Module):
         Returns:
             Tensor: Output tensor of shape `(batch, seq_len, embed_dim)`.
         """
-        # Pre-LN architecture (typically more stable)
-        # Self-attention block
         src_norm = self.norm1(src)
         attn_out = self.self_attn(src_norm, src_norm, src_norm, attn_mask=src_mask)
         src = src + self.dropout1(attn_out)

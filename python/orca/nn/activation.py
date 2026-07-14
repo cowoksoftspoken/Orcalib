@@ -59,7 +59,14 @@ class Tanh(Module):
             Tensor: Output tensor with Tanh applied.
         """
         two_x = x * 2.0
-        exp_2x = two_x.exp()
+        # Numerically stable clamping to prevent exp() overflow to infinity, which causes NaN (inf/inf)
+        eighty = _scalar(80.0, x.device)
+        neg_eighty = _scalar(-80.0, x.device)
+        
+        clamped = eighty - (eighty - two_x).relu()
+        clamped = neg_eighty + (clamped - neg_eighty).relu()
+        
+        exp_2x = clamped.exp()
         one = _scalar(1.0, x.device)
         return (exp_2x - one) / (exp_2x + one)
 
