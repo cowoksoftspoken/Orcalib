@@ -1,4 +1,4 @@
-# Orca: Progressive Machine Learning Framework
+# Orca: Progressive Deep Learning Framework
 
 **"Simple by default. Powerful when needed."**
 
